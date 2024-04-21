@@ -123,7 +123,7 @@ fn get_handle(pid: u32) -> Result<SafeHandle, windows::core::Error> {
     Ok(SafeHandle(handle))
 }
 
-fn nt_write_process_memory(handle: HANDLE, address: usize, amount_to_read: usize, mut data: Vec<u8>) -> Result<(), NTSTATUS> { 
+fn nt_write_process_memory(handle: HANDLE, address: usize, mut data: Vec<u8>) -> Result<(), NTSTATUS> { 
     let base_address:       CCvoid = address as CCvoid;
     let buffer_ptr:         CCvoid = data.as_mut_ptr() as *mut c_void;
     let mut bytes_written:  usize = 0; 
@@ -134,7 +134,7 @@ fn nt_write_process_memory(handle: HANDLE, address: usize, amount_to_read: usize
             handle, 
             base_address, 
             buffer_ptr, 
-            1, 
+            data.len(), 
             written_ptr
         ); 
         if status.is_ok() { 
@@ -210,7 +210,7 @@ fn main() {
     let variable_to_read = 100u8;
     let variable_location = &variable_to_read as *const _ as *const c_void;
     let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
-    nt_write_process_memory(*current_process_handle, variable_location as usize, 1, vec![64u8]);
+    nt_write_process_memory(*current_process_handle, variable_location as usize, vec![64u8]);
     let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
     let addr_space = nt_virtual_alloc(*current_process_handle, None, None).unwrap();
     nt_virtual_alloc(*current_process_handle, Some(addr_space as usize), Some(0x20));
