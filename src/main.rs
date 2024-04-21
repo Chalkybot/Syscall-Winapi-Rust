@@ -4,10 +4,10 @@ use std::os::raw::c_void;
 use std::ptr::null_mut;
 use core::arch::global_asm;
 use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
-        Foundation::{CloseHandle, ERROR_CLUSTER_RESOURCE_DOES_NOT_SUPPORT_UNMONITORED, HANDLE, HWND, NTSTATUS},
+        Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
             ProcessStatus::EnumProcesses,
-            Threading::{OpenProcess, PROCESS_ACCESS_RIGHTS},
+            Threading::{PROCESS_ACCESS_RIGHTS},
             WindowsProgramming::CLIENT_ID,
         },
     }
@@ -125,18 +125,6 @@ fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     Ok(pids_usize)
 }
 
-fn get_handle(pid: u32) -> Result<SafeHandle, windows::core::Error> {
-    let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
-    let mut handle = HANDLE::default();
-    unsafe {
-        handle = OpenProcess(
-            desired_access,
-            false,
-            pid
-        )?;
-    }
-    Ok(SafeHandle(handle))
-}
 
 fn nt_write_process_memory(handle: HANDLE, address: usize, mut data: Vec<u8>) -> Result<(), NTSTATUS> { 
     let base_address:       CCvoid = address as CCvoid;
