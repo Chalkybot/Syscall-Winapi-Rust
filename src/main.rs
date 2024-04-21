@@ -3,13 +3,14 @@ use std::ops::Deref;
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use core::arch::global_asm;
-use windows::Win32::{
-    Foundation::{HANDLE, NTSTATUS, CloseHandle},
-    System::{
-        ProcessStatus::EnumProcesses,
-        Threading::{OpenProcess, PROCESS_ACCESS_RIGHTS},
-
-    },
+use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
+        Foundation::{CloseHandle, ERROR_CLUSTER_RESOURCE_DOES_NOT_SUPPORT_UNMONITORED, HANDLE, HWND, NTSTATUS},
+        System::{
+            ProcessStatus::EnumProcesses,
+            Threading::{OpenProcess, PROCESS_ACCESS_RIGHTS},
+            WindowsProgramming::CLIENT_ID,
+        },
+    }
 };
 // Types to make translating windows API types to rust.
 type PVoid     = *mut c_void;      // C void*
@@ -50,51 +51,64 @@ impl<T> WinUtils for Vec<T> {
 }
 // Syscalls.
 global_asm!("
-    read_process_memory:
+    zw_read_virtual_memory:
         mov r10, rcx
         mov eax, 0x3F
         syscall
         ret
-    write_process_memory:
+    nt_write_virtual_memory:
         mov r10, rcx
         mov eax, 0x3A
         syscall
         ret
-    nt_virt_alloc:
+    zw_allocate_virtual_memory:
         mov r10, rcx
         mov eax, 0x18
+        syscall
+        ret
+    nt_open_process:
+        mov r10, rcx
+        mov eax, 0x26
         syscall
         ret
 ");
 
 extern "C" {   
-    fn read_process_memory(
-        process_handle: HANDLE,             // Handle   
-        base_address: CCvoid,               // Where to start reading
-        buffer_ptr: CCvoid,                 // ptr to buffer to read to
-        buffer_size: usize,                 // buffer size
-        bytes_read: *mut usize              // returns read size.
+    fn zw_read_virtual_memory(
+        process_handle: HANDLE,             // [in] Handle   
+        base_address: CCvoid,               // [in] Where to start reading
+        buffer_ptr: CCvoid,                 // [out] ptr to buffer to read to
+        buffer_size: usize,                 // [in] buffer size
+        bytes_read: *mut usize              // [out] returns read size.
     ) -> NTSTATUS;
 
-    fn write_process_memory(    
-        process_handle: HANDLE,             // Handle   
-        base_address: CCvoid,               // Where to start writing
-        buffer_ptr: CCvoid,                 // ptr to buffer to write from
-        buffer_size:  usize,                // buffer size (write size)
-        bytes_written: *mut usize           // returns size of write
+    fn nt_write_virtual_memory(    
+        process_handle: HANDLE,             // [in] Handle   
+        base_address: CCvoid,               // [in] Where to start writing
+        buffer_ptr: CCvoid,                 // [in] ptr to buffer to write from
+        buffer_size:  usize,                // [in] buffer size (write size)
+        bytes_written: *mut usize           // [out] returns size of write
     ) -> NTSTATUS;
     
-    fn nt_virt_alloc(
-        process_handle: HANDLE,             // Handle
-        base_address: *mut PVoid,           // Where to allocate space (empty for OS chosen)
-        zero_bits: usize,                   // ??
-        region_size: PUsize,                // How big of a region to allocate.
-        allocation_type: usize,             // Commit, reserve, etc.
-        protection_flags: usize,            // Type, R / W / X
+    fn zw_allocate_virtual_memory(
+        process_handle: HANDLE,             // [in] Handle
+        base_address: *mut PVoid,           // [in, out] Where to allocate space (empty for OS chosen)
+        zero_bits: usize,                   // [in] ??
+        region_size: PUsize,                // [in, out] How big of a region to allocate.
+        allocation_type: usize,             // [in] Commit, reserve, etc.
+        protection_flags: usize,            // [in] Type, R / W / X
     ) -> NTSTATUS;
+
+    fn nt_open_process(
+        process_handle_ptr: *mut HANDLE,    // [out] Pointer to a handle struct
+        access_mask: PROCESS_ACCESS_RIGHTS, // [in] Access mask, ex: PROCESS_ALL_ACCESS 
+        oa_ptr: OBJECT_ATTRIBUTES,          // [in] Object attributes pointer
+        client_id_ptr: CLIENT_ID,           // [in] ClientId
+    ) -> NTSTATUS;
+
 }
 
-fn enumerate_processes() -> Result<Vec<u32>, windows::core::Error> {
+fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     let mut pids = vec![0u32; 1024];
     let mut bytes_returned = 0u32;
     const SIZE_OF_U32: usize = std::mem::size_of::<u32>();
@@ -107,7 +121,8 @@ fn enumerate_processes() -> Result<Vec<u32>, windows::core::Error> {
     }
     // Let's empty out the pids.
     pids.resize(bytes_returned as usize / SIZE_OF_U32, 0);
-    Ok(pids)
+    let pids_usize = pids.iter().map(|x| *x as usize).collect();
+    Ok(pids_usize)
 }
 
 fn get_handle(pid: u32) -> Result<SafeHandle, windows::core::Error> {
@@ -130,7 +145,7 @@ fn nt_write_process_memory(handle: HANDLE, address: usize, mut data: Vec<u8>) ->
     let mut written_ptr:    PUsize = &mut bytes_written as PUsize;
     println!("[-] Running WPM.");
     unsafe { 
-        let status = write_process_memory(
+        let status = nt_write_virtual_memory(
             handle, 
             base_address, 
             buffer_ptr, 
@@ -154,7 +169,7 @@ fn nt_read_process_memory(handle: HANDLE, address: usize, amount_to_read: usize)
     let mut read_ptr:   PUsize = &mut bytes_read as PUsize;
     println!("[-] Running RPM.");
     unsafe { 
-        let status = read_process_memory(
+        let status = zw_read_virtual_memory(
             handle, 
             base_address, 
             buffer_ptr, 
@@ -185,7 +200,7 @@ fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags: Op
     println!("[-] Running VirtualAlloc.");
     unsafe { 
         // Let's try ZwAllocateVirtualMemory
-        let status = nt_virt_alloc(
+        let status = zw_allocate_virtual_memory(
             handle,
             &mut base_address,
             zero_bits,
@@ -203,15 +218,48 @@ fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags: Op
     }
 }
 
+fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
+    let mut handle = HANDLE::default();
+    let mut handle_ptr = &mut handle as *mut HANDLE;
+    let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
+    let oa = OBJECT_ATTRIBUTES::default();
+    let client_id: CLIENT_ID = CLIENT_ID{
+        UniqueProcess: HANDLE::from(HWND(pid as isize)),
+        UniqueThread: HANDLE::default()
+    };
+
+    unsafe { 
+        let status = nt_open_process(
+            handle_ptr,
+            desired_access,
+            oa,
+            client_id,
+        );
+        if status.is_ok() { 
+            println!("[+] OpenProcess Succeeded.\n-> Returned handle <{:?}>", handle.0);
+            return Ok(SafeHandle(handle));
+        }
+        eprintln!("[!] OpenProcess Failed!\n-> NTSTATUS: {:#x}", status.0);
+        return Err(status);
+    }
+
+}
 
 fn main() {
+    
     let current_process_pid = enumerate_processes().unwrap();
-    let current_process_handle = get_handle(*current_process_pid.last().unwrap()).unwrap();
+    let current_process_handle = nt_get_handle(*current_process_pid.last().unwrap()).unwrap();
+
+
+
     let variable_to_read = 100u8;
     let variable_location = &variable_to_read as *const _ as *const c_void;
     let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
     nt_write_process_memory(*current_process_handle, variable_location as usize, vec![64u8]);
     let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
+
+    
     let addr_space = nt_virtual_alloc(*current_process_handle, None, None).unwrap();
-    nt_virtual_alloc(*current_process_handle, Some(addr_space as usize), Some(0x20));
+    nt_virtual_alloc(*current_process_handle, Some(addr_space as usize), Some(0x20)); 
+    
 }
