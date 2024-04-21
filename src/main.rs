@@ -7,7 +7,7 @@ use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
             ProcessStatus::EnumProcesses,
-            Threading::{PROCESS_ACCESS_RIGHTS},
+            Threading::PROCESS_ACCESS_RIGHTS,
             WindowsProgramming::CLIENT_ID,
         },
     }
@@ -36,19 +36,6 @@ impl Drop for SafeHandle {
     }
 }
 
-trait WinUtils {
-    fn as_mut_cvoid(&mut self) -> PVoid;
-    fn as_const_cvoid(&self) -> CCvoid;
-}
-// Utilities for verbose casts.
-impl<T> WinUtils for Vec<T> {
-    fn as_mut_cvoid(&mut self) -> PVoid {
-        self.as_mut_ptr() as PVoid
-    }
-    fn as_const_cvoid(&self) -> CCvoid { 
-        self.as_ptr() as CCvoid
-    }
-}
 // Syscalls.
 global_asm!("
     zw_read_virtual_memory:
