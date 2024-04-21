@@ -1,35 +1,34 @@
-use core::ffi::c_void;
+#![allow(unused_mut, unused_assignments)]
+
+use std::os::raw::c_void;
+use std::ptr::null_mut;
 use core::arch::global_asm;
 use windows::Win32::{
-    Foundation::{HANDLE, NTSTATUS, CloseHandle},
+    Foundation::{HANDLE, NTSTATUS},
     System::{
         ProcessStatus::EnumProcesses,
         Threading::{OpenProcess, PROCESS_ACCESS_RIGHTS},
-        Memory::{VirtualAllocEx, PAGE_PROTECTION_FLAGS, 
-            VIRTUAL_ALLOCATION_TYPE, MEM_EXTENDED_PARAMETER, 
-            MEM_EXTENDED_PARAMETER0, MEM_EXTENDED_PARAMETER1},
     },
 };
-
-#[allow(unused_imports)]
-#[allow(unused_attributes)]
+// Types to make translating windows API types to rust.
+type PVoid     = *mut c_void;      // C void*
+type CCvoid    = *const c_void;   // C const void*
+type PUsize    = *mut usize;      // C's PSIZE 
 
 trait WinUtils {
-    fn as_mut_cvoid(&mut self) -> *mut c_void;
-    fn as_const_cvoid(&self) -> *const c_void;
+    fn as_mut_cvoid(&mut self) -> PVoid;
+    fn as_const_cvoid(&self) -> CCvoid;
 }
-
+// Utilities for verbose casts.
 impl<T> WinUtils for Vec<T> {
-    fn as_mut_cvoid(&mut self) -> *mut c_void {
-        self.as_mut_ptr() as *mut c_void
+    fn as_mut_cvoid(&mut self) -> PVoid {
+        self.as_mut_ptr() as PVoid
     }
-    fn as_const_cvoid(&self) -> *const c_void { 
-        self.as_ptr() as *const c_void
+    fn as_const_cvoid(&self) -> CCvoid { 
+        self.as_ptr() as CCvoid
     }
 }
-
-
-
+// Syscalls.
 global_asm!("
     read_process_memory:
         mov r10, rcx
@@ -41,30 +40,37 @@ global_asm!("
         mov eax, 0x3A
         syscall
         ret
-    virtual_alloc:
+    nt_virt_alloc:
         mov r10, rcx
-        mov eax, 0x76
+        mov eax, 0x18
         syscall
         ret
 ");
 
 extern "C" {   
     fn read_process_memory(
-        hProcess: HANDLE,                   // Handle   
-        lpBaseAddress: *const c_void,       // Where to start reading
-        lpBuffer: *const c_void,            // ptr to buffer to read to
-        nSize:  usize,                      // buffer size
-        lpNumberOfBytesRead: *mut usize);   // returns read size.
+        process_handle: HANDLE,             // Handle   
+        base_address: CCvoid,               // Where to start reading
+        buffer_ptr: CCvoid,                 // ptr to buffer to read to
+        buffer_size: usize,                 // buffer size
+        bytes_read: *mut usize              // returns read size.
+    ) -> NTSTATUS;
 
     fn write_process_memory(    
-        hProcess: HANDLE,                   // Handle   
-        lpBaseAddress: *const c_void,       // Where to start writing
-        lpBuffer: *const c_void,            // ptr to buffer to write from
-        nSize:  usize,                      // buffer size (write size)
-        lpNumberOfBytesRead: *mut usize);   // returns size of write
+        process_handle: HANDLE,             // Handle   
+        base_address: CCvoid,               // Where to start writing
+        buffer_ptr: CCvoid,                 // ptr to buffer to write from
+        buffer_size:  usize,                // buffer size (write size)
+        bytes_written: *mut usize           // returns size of write
+    ) -> NTSTATUS;
     
-    fn virtual_alloc(
-
+    fn nt_virt_alloc(
+        process_handle: HANDLE,             // Handle
+        base_address: *mut PVoid,           // Where to allocate space (empty for OS chosen)
+        zero_bits: usize,                   // ??
+        region_size: PUsize,                // How big of a region to allocate.
+        allocation_type: usize,             // Commit, reserve, etc.
+        protection_flags: usize,            // Type, R / W / X
     ) -> NTSTATUS;
 }
 
@@ -83,6 +89,7 @@ fn enumerate_processes() -> Result<Vec<u32>, windows::core::Error> {
     pids.resize(bytes_returned as usize / SIZE_OF_U32, 0);
     Ok(pids)
 }
+
 fn get_handle(pid: u32) -> Result<HANDLE, windows::core::Error> {
     let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
     let mut handle = HANDLE::default();
@@ -95,83 +102,97 @@ fn get_handle(pid: u32) -> Result<HANDLE, windows::core::Error> {
     }
     Ok(handle)
 }
-fn nt_write_process_memory(handle: HANDLE, address: usize, amount_to_read: usize, mut data: Vec<u8>) { 
-    let base_address = address as *const c_void;
-    let buffer_ptr = data.as_mut_ptr() as *mut c_void;
-    let mut bytes_read: usize = 0;
-    println!("Running wpm syscall");
+
+fn nt_write_process_memory(handle: HANDLE, address: usize, amount_to_read: usize, mut data: Vec<u8>) -> Result<(), NTSTATUS> { 
+    let base_address:       CCvoid = address as CCvoid;
+    let buffer_ptr:         CCvoid = data.as_mut_ptr() as *mut c_void;
+    let mut bytes_written:  usize = 0; 
+    let mut written_ptr:    PUsize = &mut bytes_written as PUsize;
+    println!("[-] Running WPM.");
     unsafe { 
-        write_process_memory(handle, base_address, buffer_ptr, 1, &mut bytes_read as *mut usize); 
+        let status = write_process_memory(
+            handle, 
+            base_address, 
+            buffer_ptr, 
+            1, 
+            written_ptr
+        ); 
+        if status.is_ok() { 
+            println!("[+] WPM Succeeded.\n-> Wrote {}", bytes_written);
+            return Ok(());
+        }
+        eprintln!("[!] WPM Failed!\n-> NTSTATUS: {:#x}", status.0);
+        return Err(status);
     }
 }
-fn nt_read_process_memory(handle: HANDLE, address: usize, amount_to_read: usize) -> Vec<u8> { 
-    let base_address = address as *const c_void;
-    let mut buffer = vec![0u8; 1]; 
-    let buffer_ptr = buffer.as_mut_ptr() as *mut c_void;
-    let mut bytes_read: usize = 0;
-    println!("Running rpm syscall");
+
+fn nt_read_process_memory(handle: HANDLE, address: usize, amount_to_read: usize) -> Result<Vec<u8>, NTSTATUS> { 
+    let base_address:   CCvoid = address as CCvoid;
+    let mut buffer:     Vec<u8>= vec![0u8; amount_to_read]; 
+    let buffer_ptr:     CCvoid = buffer.as_mut_ptr() as PVoid;
+    let mut bytes_read: usize  = 0;
+    let mut read_ptr:   PUsize = &mut bytes_read as PUsize;
+    println!("[-] Running RPM.");
     unsafe { 
-        read_process_memory(handle, base_address, buffer_ptr, 1, &mut bytes_read as *mut usize); 
-    }
-    buffer
-}
-
-// -1073741819 -> 0xC0000005 STATUS_ACCESS_VIOLATION
-fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>) {
-    let lpaddr: *mut usize = match address {
-        Some(t) => &mut t as *mut usize,
-        None => 0usize as &mut t as *mut usize,
-    };
-    let size = 2048usize as *mut usize;
-    let alloc_type = 0x00001000usize;
-    let page_flags = 0x04usize;
-
-    unsafe { 
-        virtual_alloc(
-            handle,        // _In_ HANDLE ProcessHandle,
-            lpaddr         // _Inout_ _At_(*BaseAddress, _Readable_bytes_(*RegionSize) _Writable_bytes_(*RegionSize) _Post_readable_byte_size_(*RegionSize)) PVOID *BaseAddress,
-            size,        // _Inout_ PSIZE_T RegionSize,
-            alloc_type,       // _In_ ULONG AllocationType,
-            page_flags,        // _In_ ULONG PageProtection,
-                    // _Inout_updates_opt_(ExtendedParameterCount) PMEM_EXTENDED_PARAMETER ExtendedParameters,
-                    // _In_ ULONG ExtendedParameterCount
-
-
+        let status = read_process_memory(
+            handle, 
+            base_address, 
+            buffer_ptr, 
+            amount_to_read, 
+            read_ptr
         );
+        if status.is_ok() { 
+            println!("[+] RPM Succeeded.\n-> Read {}", bytes_read);
+            return Ok(buffer);
+        }
+        eprintln!("[!] RPM Failed!\n-> NTSTATUS: {:#x}", status.0);
+        return Err(status);
     }
 }
 
-fn virtual_alloc_ex(handle: HANDLE, address: Option<usize>) { 
-    let size: usize = 2048;
-    let lpaddr: Option<*const c_void> = match address {
-            Some(t) => Some(t  as *const c_void),
-            None => None
+fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags: Option<usize>) -> Result<PVoid, NTSTATUS> {
+    let mut base_address:   PVoid = match address { 
+        Some(number)    => number as PVoid,
+        None            => null_mut(),
     };
-    let alloc_type = VIRTUAL_ALLOCATION_TYPE(0x00001000);
-    let page_flags = PAGE_PROTECTION_FLAGS(0x04);
-    unsafe {
-        VirtualAllocEx(
+    let zero_bits:          usize = 0;
+    let mut region_size:    usize = 4096;
+    let allocation_type:    usize = 0x00001000; 
+    let protection_flags:   usize = match protection_flags{ 
+        Some(flags) => flags,    
+        None        => 0x00000004, // PAGE_READWRITE
+    };
+    println!("[-] Running VirtualAlloc.");
+    unsafe { 
+        // Let's try ZwAllocateVirtualMemory
+        let status = nt_virt_alloc(
             handle,
-            lpaddr,
-            size,
-            alloc_type,
-            page_flags,
+            &mut base_address,
+            zero_bits,
+            &mut region_size,
+            allocation_type,
+            protection_flags,
         );
+        if status.is_ok() { 
+            println!("[+] VirtualAlloc Succeeded.\n-> {:#x} - {:#x}",  base_address as usize, base_address as usize + region_size);
+            return Ok(base_address);
+        }
+        eprintln!("[!] VirtualAlloc Failed!\n-> NTSTATUS: {:#x}", status.0);
+        return Err(status);
 
     }
 }
+
 
 fn main() {
     let current_process_pid = enumerate_processes().unwrap();
     let current_process_handle = get_handle(*current_process_pid.last().unwrap()).unwrap();
     let variable_to_read = 100u8;
     let variable_location = &variable_to_read as *const _ as *const c_void;
-    println!("Testing:\nAddress: {:?} contains {}", variable_location, variable_to_read);
     let buff = nt_read_process_memory(current_process_handle, variable_location as usize, 1);
-    println!("Read: {}", buff[0]);
-    println!("Overwriting with value 64");
     nt_write_process_memory(current_process_handle, variable_location as usize, 1, vec![64u8]);
     let buff = nt_read_process_memory(current_process_handle, variable_location as usize, 1);
-    println!("Read: {}", buff[0]);
-    virtual_alloc_ex(current_process_handle, None);
+    //virtual_alloc_ex(current_process_handle, None);
+    let addr_space = nt_virtual_alloc(current_process_handle, None, None).unwrap();
+    nt_virtual_alloc(current_process_handle, Some(addr_space as usize), Some(0x20));
 }
