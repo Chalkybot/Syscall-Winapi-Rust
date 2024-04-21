@@ -1,15 +1,13 @@
 #![allow(unused_mut, unused_assignments)]
 use std::ops::Deref;
 use std::os::raw::c_void;
-use std::env;
 use std::ptr::null_mut;
 use core::arch::global_asm;
 use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
             ProcessStatus::EnumProcesses,
-            Threading::{CreateRemoteThreadEx, LPPROC_THREAD_ATTRIBUTE_LIST, 
-                LPTHREAD_START_ROUTINE, PROCESS_ACCESS_RIGHTS, 
+            Threading::{PROCESS_ACCESS_RIGHTS, 
                 THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS},
             WindowsProgramming::CLIENT_ID,
         },
@@ -17,10 +15,10 @@ use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
 };
 
 
-// Types to make translating windows API types to rust.
-type PVoid     = *mut c_void;      // C void*
-type CCvoid    = *const c_void;   // C const void*
-type PUsize    = *mut usize;      // C's PSIZE 
+// Types to make translating C -> rust less verbose.
+type PVoid     = *mut c_void;       // C void*
+type CCvoid    = *const c_void;     // C const void*
+type PUsize    = *mut usize;        // C's PSIZE 
 
 struct SafeHandle(HANDLE);
 
@@ -312,10 +310,6 @@ fn main() {
 
     //create_thread_ex(*current_process_handle, addr_space as usize); 
     nt_create_remote_thread_ex(*current_process_handle, addr_space);
-    // Sleep to make sure the injection was succesful.
-    use std::{thread, time};
-    let ten_millis = time::Duration::from_millis(100);
-    thread::sleep(ten_millis);
 
     /*
     let variable_to_read = 100u8;
