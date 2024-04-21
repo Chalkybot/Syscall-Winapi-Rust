@@ -1,19 +1,39 @@
 #![allow(unused_mut, unused_assignments)]
-
+use std::ops::Deref;
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use core::arch::global_asm;
 use windows::Win32::{
-    Foundation::{HANDLE, NTSTATUS},
+    Foundation::{HANDLE, NTSTATUS, CloseHandle},
     System::{
         ProcessStatus::EnumProcesses,
         Threading::{OpenProcess, PROCESS_ACCESS_RIGHTS},
+
     },
 };
 // Types to make translating windows API types to rust.
 type PVoid     = *mut c_void;      // C void*
 type CCvoid    = *const c_void;   // C const void*
 type PUsize    = *mut usize;      // C's PSIZE 
+
+struct SafeHandle(HANDLE);
+
+impl Deref for SafeHandle {
+    type Target = HANDLE;
+    fn deref (&self) -> &Self::Target { 
+        &self.0
+    }
+}
+impl Drop for SafeHandle {
+    fn drop(&mut self) {
+        unsafe { 
+            match CloseHandle(self.0) { 
+                Ok(_) => println!("[+] Closed handle."),
+                Err(e) => eprintln!("[!] Error closing handle\n-> {}", e),
+            }
+        }
+    }
+}
 
 trait WinUtils {
     fn as_mut_cvoid(&mut self) -> PVoid;
@@ -90,7 +110,7 @@ fn enumerate_processes() -> Result<Vec<u32>, windows::core::Error> {
     Ok(pids)
 }
 
-fn get_handle(pid: u32) -> Result<HANDLE, windows::core::Error> {
+fn get_handle(pid: u32) -> Result<SafeHandle, windows::core::Error> {
     let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
     let mut handle = HANDLE::default();
     unsafe {
@@ -100,7 +120,7 @@ fn get_handle(pid: u32) -> Result<HANDLE, windows::core::Error> {
             pid
         )?;
     }
-    Ok(handle)
+    Ok(SafeHandle(handle))
 }
 
 fn nt_write_process_memory(handle: HANDLE, address: usize, amount_to_read: usize, mut data: Vec<u8>) -> Result<(), NTSTATUS> { 
@@ -189,10 +209,9 @@ fn main() {
     let current_process_handle = get_handle(*current_process_pid.last().unwrap()).unwrap();
     let variable_to_read = 100u8;
     let variable_location = &variable_to_read as *const _ as *const c_void;
-    let buff = nt_read_process_memory(current_process_handle, variable_location as usize, 1);
-    nt_write_process_memory(current_process_handle, variable_location as usize, 1, vec![64u8]);
-    let buff = nt_read_process_memory(current_process_handle, variable_location as usize, 1);
-    //virtual_alloc_ex(current_process_handle, None);
-    let addr_space = nt_virtual_alloc(current_process_handle, None, None).unwrap();
-    nt_virtual_alloc(current_process_handle, Some(addr_space as usize), Some(0x20));
+    let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
+    nt_write_process_memory(*current_process_handle, variable_location as usize, 1, vec![64u8]);
+    let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
+    let addr_space = nt_virtual_alloc(*current_process_handle, None, None).unwrap();
+    nt_virtual_alloc(*current_process_handle, Some(addr_space as usize), Some(0x20));
 }
