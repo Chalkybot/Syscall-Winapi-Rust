@@ -1,5 +1,5 @@
 #![allow(unused_mut, unused_assignments)]
-use std::{ops::Deref, thread::current};
+use std::ops::Deref;
 use std::os::raw::c_void;
 use std::ptr::null_mut;
 use core::arch::global_asm;
@@ -7,7 +7,7 @@ use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES,
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
-            Memory::{VirtualProtectEx, PAGE_PROTECTION_FLAGS}, ProcessStatus::EnumProcesses, 
+            ProcessStatus::EnumProcesses, 
             Threading::{PROCESS_ACCESS_RIGHTS, 
                 THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
                 WindowsProgramming::CLIENT_ID
@@ -21,6 +21,7 @@ type PVoid     = *mut c_void;       // C void*
 type CCvoid    = *const c_void;     // C const void*
 type PUsize    = *mut usize;        // C's PSIZE 
 
+// A wrapper structure for the HANDLE type. This is useful as the handle will be dropped automatically.
 struct SafeHandle(HANDLE);
 
 impl Deref for SafeHandle {
@@ -78,57 +79,57 @@ global_asm!("
 
 extern "C" {   
     fn zw_read_virtual_memory(
-        process_handle: HANDLE,             // [in] Handle   
-        base_address: CCvoid,               // [in] Where to start reading
-        buffer_ptr: CCvoid,                 // [out] ptr to buffer to read to
-        buffer_size: usize,                 // [in] buffer size
-        bytes_read: *mut usize              // [out] returns read size.
+        process_handle: HANDLE,             // [in] Handle                              [HANDLE] 
+        base_address: CCvoid,               // [in, opt] Where to start reading         [PVOID]
+        buffer_ptr: CCvoid,                 // [out] ptr to buffer to read to           [PVOID]
+        buffer_size: usize,                 // [in] buffer size                         [SIZE_T]
+        bytes_read: *mut usize              // [out, opt] returns read size.            [PSIZE_T]
     ) -> NTSTATUS;
 
     fn nt_write_virtual_memory(    
-        process_handle: HANDLE,             // [in] Handle   
-        base_address: CCvoid,               // [in] Where to start writing
-        buffer_ptr: CCvoid,                 // [in] ptr to buffer to write from
-        buffer_size:  usize,                // [in] buffer size (write size)
-        bytes_written: *mut usize           // [out] returns size of write
+        process_handle: HANDLE,             // [in] Handle                              [HANDLE] 
+        base_address: CCvoid,               // [in, opt] Where to start writing         [PVOID] 
+        buffer_ptr: CCvoid,                 // [in] pointer to buffer to write from     [PVOID] 
+        buffer_size:  usize,                // [in] buffer size (write size)            [SIZE_T] 
+        bytes_written: *mut usize           // [out, opt] returns size of write         [PSIZE_T] 
     ) -> NTSTATUS;
     
     fn zw_allocate_virtual_memory(
-        process_handle: HANDLE,             // [in] Handle
-        base_address: *mut PVoid,           // [in, out] Where to allocate space (empty for OS chosen)
-        zero_bits: usize,                   // [in] ??
-        region_size: PUsize,                // [in, out] How big of a region to allocate.
-        allocation_type: usize,             // [in] Commit, reserve, etc.
-        protection_flags: usize,            // [in] Type, R / W / X
+        process_handle: HANDLE,             // [in] Handle                              [HANDLE]
+        base_address: *mut PVoid,           // [in, out] Where to allocate space        [*PVOID]
+        zero_bits: usize,                   // [in] Allocation mask requirements        [ULONG]
+        region_size: PUsize,                // [in, out] Region's size                  [PULONG]
+        allocation_type: usize,             // [in] Commit, reserve, etc.               [ULONG]
+        protection_flags: usize,            // [in] Type, R / W / X                     [ULONG]
     ) -> NTSTATUS;
 
     fn nt_open_process(
-        process_handle_ptr: *mut HANDLE,    // [out] Pointer to a handle struct
-        access_mask: PROCESS_ACCESS_RIGHTS, // [in] Access mask, ex: PROCESS_ALL_ACCESS 
-        oa_ptr: OBJECT_ATTRIBUTES,          // [in] Object attributes pointer
-        client_id_ptr: CLIENT_ID,           // [in] ClientId
+        process_handle_ptr: *mut HANDLE,    // [out] Handle will be returned here       [PHANDLE]
+        access_mask: PROCESS_ACCESS_RIGHTS, // [in] Access mask, ex: PROCESS_ALL_ACCESS [ACCESS_MASK]
+        oa_ptr: OBJECT_ATTRIBUTES,          // [in] Object attributes pointer           [POBJECT_ATTRIBUTES]
+        client_id_ptr: CLIENT_ID,           // [in] ClientId struct PID goes in here    [PCLIENT_ID]
     ) -> NTSTATUS;
 
     fn nt_create_thread_ex(
-        handle_ptr: *mut HANDLE,            // [out] PHANDLE ThreadHandle,
-        acces_mask: THREAD_ACCESS_RIGHTS,   // [in] ACCESS_MASK DesiredAccess,
-        obj_attributes: CCvoid,             // [in] (opt) POBJECT_ATTRIBUTES ObjectAttributes,
-        process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
-        start_routine: CCvoid,              // [in] PUSER_THREAD_START_ROUTINE StartRoutine,
-        arguments: CCvoid,                  // [in]opt_ PVOID Argument,
-        create_flags: u32,                  // [in] ULONG CreateFlags, // THREAD_CREATE_FLAGS_*
-        zerobits: usize,                    // [in] SIZE_T ZeroBits,
-        stack_size: usize,                  // [in] SIZE_T StackSize,
-        stack_max: usize,                   // [in] SIZE_T MaximumStackSize,
-        attribute_list: CCvoid,             // [in]opt_ PPS_ATTRIBUTE_LIST AttributeList
+        handle_ptr: *mut HANDLE,            // [out] Handle to thread will be returned  [PHANDLE]
+        acces_mask: THREAD_ACCESS_RIGHTS,   // [in] Access mask, ex:THREAD_ALL_ACCESS   [ACCESS_MASK]
+        obj_attributes: CCvoid,             // [in, opt] Object attributes              [OBJECT_ATTRIBUTES]
+        process_handle: HANDLE,             // [in] Handle for process                  [HANDLE]
+        start_routine: CCvoid,              // [in] Thread start address                [PUSER_THREAD_START_ROUTINE]
+        arguments: CCvoid,                  // [in, opt] Passed arguments,              [PVOID]
+        create_flags: u32,                  // [in, opt] Creation flags, 0x0            [ULONG]
+        zerobits: usize,                    // [in] Mask, 0x0 for default.              [SIZE_T]
+        stack_size: usize,                  // [in] Stack size, 0x0 for default,        [SIZE_T]
+        stack_max: usize,                   // [in] Stack's max size, 0x0 for default   [SIZE_T]
+        attribute_list: CCvoid,             // [in, opt] attribute list                 [PPS_ATTRIBUTE_LIST]
     ) -> NTSTATUS;
     
     fn zw_protect_virtual_memory(
-        process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
-        base_address: *mut PVoid,                // [in, out] PVOID *BaseAddress,
-        region_size:  PUsize,                // [in, out] PSIZE_T RegionSize,
-        proc_flag: usize,   // [in] ULONG NewProtect,
-        flag_old: *mut usize                  // [out] PULONG OldProtect
+        process_handle: HANDLE,             // [in] Handle to process.                  [HANDLE]
+        base_address: *mut PVoid,           // [in, out] Pointer to start address.      [*PVOID]
+        region_size:  PUsize,               // [in, out] Size of alter region           [PSIZE_T]
+        proc_flag: usize,                   // [in] New protection flags.               [ULONG]
+        flag_old: *mut usize                // [out] Returns old protection flags       [PULONG]
     ) -> NTSTATUS;
 }
 
@@ -263,7 +264,6 @@ fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
 fn nt_create_remote_thread_ex(handle: HANDLE, address: CCvoid) -> Result<(), NTSTATUS> {
     let mut handle_base = HANDLE::default(); 
     let mut handle_ptr = &mut handle_base as *mut HANDLE;
-
     unsafe { 
         let status = nt_create_thread_ex(
             handle_ptr,            
