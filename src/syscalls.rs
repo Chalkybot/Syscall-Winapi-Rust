@@ -2,6 +2,7 @@ use std::{ops::Deref, os::raw::c_void};
 use core::arch::global_asm;
 use std::ptr::null_mut;
 
+
 use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, 
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
@@ -14,7 +15,7 @@ use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES,
     }
 };
 
-// A wrapper structure for handles to implement Drop, printing, etc.
+// -- Wrapper  for handles to implement QOL features. --
 pub struct SafeHandle(pub HANDLE);
 
 impl Deref for SafeHandle {
@@ -35,6 +36,12 @@ impl Drop for SafeHandle {
     }
 }
 
+impl std::fmt::Display for SafeHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let handle_id: isize = self.0.0;
+        write!(formatter, "<Handle {}>", handle_id)
+    }
+}
 
 // Types to make translating C -> rust less verbose.
 pub type PVoid     = *mut c_void;       // C void*
