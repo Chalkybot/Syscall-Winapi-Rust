@@ -16,7 +16,95 @@ use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES,
     }
 };
 
-// -- Wrapper  for handles to implement QOL features. --
+// --- Windows process struct ---
+pub struct WindowsProcess {
+    pub pid: usize,
+    pub handle: Option<SafeHandle>,
+    pub name: Option<String>,
+}
+
+impl WindowsProcess {
+    pub fn from_pid(pid: usize) -> Self { 
+        WindowsProcess { 
+            pid: pid,
+            handle: None,
+            name: None,
+        }
+    }
+
+    pub fn get_handle(&mut self) -> Result<(), NTSTATUS> { 
+        let handle = nt_get_handle(self.pid)?;
+        self.handle = Some(handle);
+        Ok(())
+    }
+
+    fn check_handle(&mut self) -> Result<(), NTSTATUS> { 
+        if self.handle.is_none() { 
+            eprintln!("An open handle is required!");
+            self.get_handle()?;
+            eprintln!("Acquired a handle.")
+        }
+        Ok(())
+    }
+
+    pub fn write_process_memory(&mut self, address: usize, data: Vec<u8>) -> Result<usize, NTSTATUS> {
+        self.check_handle()?;
+        let handle = self.handle.as_ref().unwrap(); 
+        Ok(nt_write_process_memory(
+            **handle, 
+            address as usize, 
+            data
+        )?)
+    }
+
+    pub fn read_process_memory(&mut self, address: usize, amount_to_read: usize) -> Result<(Vec<u8>, usize), NTSTATUS> {
+        self.check_handle()?;
+        let handle = self.handle.as_ref().unwrap(); 
+        Ok(nt_read_process_memory(
+            **handle, 
+            address, 
+            amount_to_read
+        )?)
+    }
+
+    pub fn virtual_alloc(&mut self, address: Option<usize>, protection_flags: Option<usize>, size: Option<usize>, allocation_type: Option<usize>) -> Result<PVoid, NTSTATUS> {
+        self.check_handle()?;
+        let handle = self.handle.as_ref().unwrap(); 
+        Ok(nt_virtual_alloc(
+            **handle, 
+            address, 
+            protection_flags, 
+            size, 
+            allocation_type
+        )?)
+
+    }
+    pub fn create_remote_thread_ex(&mut self, address: CCvoid) -> Result<(), NTSTATUS> {
+        self.check_handle()?;
+        let handle = self.handle.as_ref().unwrap(); 
+        Ok(nt_create_remote_thread_ex(
+            **handle, 
+            address
+        )?)
+    }
+
+    pub fn virtual_protect(&mut self, address: CCvoid, protection_size: usize, flags: usize) -> Result<CCvoid, NTSTATUS> {
+        self.check_handle()?;
+        let handle = self.handle.as_ref().unwrap(); 
+        Ok(nt_virtual_protect_ex(
+            **handle, 
+            address, 
+            protection_size, 
+            flags
+        )?)
+    }
+
+
+}
+
+
+
+// --- Wrapper for handles to implement QOL features. ---
 pub struct SafeHandle(pub HANDLE);
 
 impl Deref for SafeHandle {
@@ -44,12 +132,12 @@ impl std::fmt::Display for SafeHandle {
     }
 }
 
-// Types to make translating C -> rust less verbose.
+// --- Types ---
 pub type PVoid     = *mut c_void;       // C void*
 pub type CCvoid    = *const c_void;     // C const void*
 pub type PUsize    = *mut usize;        // C's PSIZE 
 
-// -- Assembly syscalls --
+// --- Assembly syscalls ---
 // These need to be ported to being dynamically loaded, 
 // as the SNN's can change based on versions.
 global_asm!("
@@ -160,7 +248,30 @@ pub fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     Ok(pids_usize)
 }
 
-pub fn nt_write_process_memory(handle: HANDLE, address: usize, mut data: Vec<u8>) ->Result<usize, NTSTATUS> { 
+pub fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
+    let mut handle = HANDLE::default();
+    let mut handle_ptr = &mut handle as *mut HANDLE;
+    let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
+    let oa = OBJECT_ATTRIBUTES::default();
+    let client_id: CLIENT_ID = CLIENT_ID{
+        UniqueProcess: HANDLE::from(HWND(pid as isize)),
+        UniqueThread: HANDLE::default()
+    };
+    unsafe { 
+        let status = nt_open_process(
+            handle_ptr,
+            desired_access,
+            oa,
+            client_id,
+        );
+        match status.is_ok() { 
+            true  => return Ok(SafeHandle(handle)),
+            false => return Err(status)
+        }
+    }
+}
+
+pub fn nt_write_process_memory(handle: HANDLE, address: usize, mut data: Vec<u8>) -> Result<usize, NTSTATUS> { 
     let base_address:       CCvoid = address as CCvoid;
     let buffer_ptr:         CCvoid = data.as_mut_ptr() as *mut c_void;
     let mut bytes_written:  usize = 0; 
@@ -201,7 +312,7 @@ pub fn nt_read_process_memory(handle: HANDLE, address: usize, amount_to_read: us
     }
 }
 
-pub fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags: Option<usize>, size: Option<usize>) -> Result<PVoid, NTSTATUS> {
+pub fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags: Option<usize>, size: Option<usize>, allocation_type: Option<usize>) -> Result<PVoid, NTSTATUS> {
     let mut base_address:   PVoid = match address { 
         Some(number)    => number as PVoid,
         None                   => null_mut(),
@@ -211,7 +322,10 @@ pub fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags
         Some(size)      =>  size,
         None                   =>  4096
     };
-    let allocation_type:    usize = 0x00001000; 
+    let allocation_type:    usize = match allocation_type { 
+        Some(value)     => value,
+        None                   => 0x00001000,
+    }; 
     let protection_flags:   usize = match protection_flags{ 
         Some(flags)     => flags,    
         None                   => 0x00000004, // PAGE_READWRITE
@@ -227,29 +341,6 @@ pub fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags
         );
         match status.is_ok() { 
             true  => return Ok(base_address),
-            false => return Err(status)
-        }
-    }
-}
-
-pub fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
-    let mut handle = HANDLE::default();
-    let mut handle_ptr = &mut handle as *mut HANDLE;
-    let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
-    let oa = OBJECT_ATTRIBUTES::default();
-    let client_id: CLIENT_ID = CLIENT_ID{
-        UniqueProcess: HANDLE::from(HWND(pid as isize)),
-        UniqueThread: HANDLE::default()
-    };
-    unsafe { 
-        let status = nt_open_process(
-            handle_ptr,
-            desired_access,
-            oa,
-            client_id,
-        );
-        match status.is_ok() { 
-            true  => return Ok(SafeHandle(handle)),
             false => return Err(status)
         }
     }
