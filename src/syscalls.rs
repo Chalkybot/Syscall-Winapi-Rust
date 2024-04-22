@@ -1,19 +1,26 @@
 #![allow(unused_mut, unused_assignments, dead_code)]
 
-use std::{ops::Deref, os::raw::c_void};
+use std::{ops::Deref, os::raw::c_void, path::PathBuf};
 use core::arch::global_asm;
 use std::ptr::null_mut;
-use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, 
-    Win32::{
+use windows::{core::PWSTR, Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
         System::{
             ProcessStatus::EnumProcesses, 
-            Threading::{PROCESS_ACCESS_RIGHTS, THREAD_ALL_ACCESS, 
-                THREAD_ACCESS_RIGHTS}, 
+            Threading::{QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
                 WindowsProgramming::CLIENT_ID
         },
     }
 };
+
+// Utility function
+fn pop_suffix<T: AsRef<[u16]>>(input: T) -> Vec<u16> {
+    let mut buffer = Vec::from(input.as_ref());
+    while let Some(&0) = buffer.last() {
+        buffer.pop();
+    }
+    buffer
+}
 
 // --- Windows process struct ---
 pub struct WindowsProcess {
@@ -43,6 +50,24 @@ impl WindowsProcess {
             eprintln!("Acquired a handle.")
         }
         Ok(())
+    }
+
+    fn get_name(&mut self) -> Result <bool, windows::core::Error> {
+        self.check_handle()?;
+        let handle = self.handle.as_ref().unwrap(); 
+        // Attempts to get the filename of the process.
+        self.name = match get_process_name(
+            &**handle)?
+            .file_name()
+            .and_then(|path| 
+                path.to_str()) {
+            Some(path_string) => Some(String::from(path_string)),
+            None                    => None,
+        };
+        if self.name.is_none(){ 
+            return Ok(true)
+        }
+        Ok(false)
     }
 
     pub fn write_process_memory(&mut self, address: usize, data: Vec<u8>) -> Result<usize, NTSTATUS> {
@@ -225,6 +250,7 @@ extern "C" {
 }
 
 // --- Rusty wrapper functions ---
+// NB! the nt_ preffix functions are the only syscall functions.
 pub fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     let mut pids: Vec<u32> = vec![0u32; 1024];
     let mut bytes_returned: u32 = 0u32;
@@ -240,6 +266,25 @@ pub fn enumerate_processes() -> Result<Vec<usize>, windows::core::Error> {
     pids.resize(bytes_returned as usize / SIZE_OF_U32, 0);
     let pids_usize: Vec<usize> = pids.iter().map(|x: &u32| *x as usize).collect();
     Ok(pids_usize)
+}
+
+pub fn get_process_name(handle: &HANDLE) -> Result<PathBuf, windows::core::Error> {
+    let mut return_buffer: Vec<u16> = vec![0; 1024];
+    let buffer_ptr = PWSTR::from_raw(return_buffer.as_mut_ptr());
+    let flags = PROCESS_NAME_FORMAT(0);
+    let mut buffer_size = return_buffer.len() as u32;
+    unsafe {
+        QueryFullProcessImageNameW(
+            *handle,
+            flags,
+            buffer_ptr,
+            &mut buffer_size
+        )?;
+    }
+    // Cleaning up the buffer.
+    
+    return_buffer = pop_suffix(return_buffer);
+    Ok(PathBuf::from(String::from_utf16_lossy(&return_buffer)))
 }
 
 pub fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
