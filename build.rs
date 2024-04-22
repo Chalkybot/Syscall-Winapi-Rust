@@ -72,9 +72,7 @@ fn main () {
         "
 pub const INITVEC: [u8; 16] = {};
 pub const KEY: [u8; 32] = {};
-pub fn fetch_encrypted_shellcode() -> Vec<u8> {{
-    {}.to_vec()
-}} 
+pub const SHELLCODE: &[u8] = &{};
         ",
         iv_str, key_str, encrypted_payload_str);
 
