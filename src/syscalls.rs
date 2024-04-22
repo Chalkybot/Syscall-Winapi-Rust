@@ -1,7 +1,8 @@
+#![allow(unused_mut, unused_assignments, dead_code)]
+
 use std::{ops::Deref, os::raw::c_void};
 use core::arch::global_asm;
 use std::ptr::null_mut;
-
 
 use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, 
     Win32::{
