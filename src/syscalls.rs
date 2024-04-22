@@ -3,7 +3,6 @@
 use std::{ops::Deref, os::raw::c_void};
 use core::arch::global_asm;
 use std::ptr::null_mut;
-
 use windows::{Wdk::Foundation::OBJECT_ATTRIBUTES, 
     Win32::{
         Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
@@ -22,7 +21,6 @@ pub struct WindowsProcess {
     pub handle: Option<SafeHandle>,
     pub name: Option<String>,
 }
-
 impl WindowsProcess {
     pub fn from_pid(pid: usize) -> Self { 
         WindowsProcess { 
@@ -102,8 +100,6 @@ impl WindowsProcess {
 
 }
 
-
-
 // --- Wrapper for handles to implement QOL features. ---
 pub struct SafeHandle(pub HANDLE);
 
@@ -113,7 +109,6 @@ impl Deref for SafeHandle {
         &self.0
     }
 }
-
 impl Drop for SafeHandle {
     fn drop(&mut self) {
         unsafe { 
@@ -124,7 +119,6 @@ impl Drop for SafeHandle {
         }
     }
 }
-
 impl std::fmt::Display for SafeHandle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         let handle_id: isize = self.0.0;
