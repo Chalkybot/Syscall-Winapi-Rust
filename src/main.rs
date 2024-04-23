@@ -148,7 +148,7 @@ fn main() {
     let squiggly = "|/-\\";
     let second = std::time::Duration::from_millis(1000);
     for i in 0..10 {
-        let index = i % squiggly.len();
+        let index = i % squiggly.len(); 
         print!("[{}] Eeping :>\r", squiggly.chars().nth(index).unwrap_or('\0')); 
         io::stdout().flush().unwrap(); 
         std::thread::sleep(second);
