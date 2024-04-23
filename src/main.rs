@@ -80,10 +80,11 @@ fn main() {
     own_process.get_handle();
 
     // Whatever the fuck this is:
-    let token = get_token_handle(*own_process.handle.unwrap()).unwrap();
+    let token = nt_get_token_handle(*own_process.handle.unwrap()).unwrap();
     
-    adjust_token_privileges(token);
-
+    //adjust_token_privileges(token);
+    nt_adjust_token_privileges(token).unwrap();
+    
     match current_process.get_handle(){
         Ok(_) => println!("[+] Acquired handle."),
         Err(e) => panic!("[!] Failure acquiring handle!\n -> {:#x}", e.0),

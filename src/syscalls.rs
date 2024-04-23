@@ -1,13 +1,13 @@
 #![allow(unused_mut, unused_assignments, dead_code)]
 
-use std::{ops::Deref, os::raw::c_void, path::PathBuf};
+use std::{ops::Deref, os::raw::c_void, path::PathBuf, ptr};
 use core::arch::global_asm;
 use std::ptr::null_mut;
 use windows::{  core::PWSTR, 
                 Wdk::Foundation::OBJECT_ATTRIBUTES, 
                 Win32::{
                     Foundation::{CloseHandle, HANDLE, HWND, LUID, NTSTATUS}, 
-                    Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES}, 
+                    Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, TOKEN_ACCESS_MASK, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES}, 
                     System::{ ProcessStatus::EnumProcesses, 
                         Threading::{OpenProcessToken, QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
                                     WindowsProgramming::CLIENT_ID}
@@ -194,7 +194,13 @@ zw_protect_virtual_memory:
 
 nt_adjust_privileges_token:
     mov r10, rcx
-    mov eax, 0x50
+    mov eax, 0x41
+    syscall
+    ret
+    
+nt_open_process_token:
+    mov r10, rcx
+    mov eax, 0x129
     syscall
     ret
 ");
@@ -206,7 +212,7 @@ extern "C" {
         base_address: CCvoid,               // [in, opt] Where to start reading         [PVOID]
         buffer_ptr: CCvoid,                 // [out] ptr to buffer to read to           [PVOID]
         buffer_size: usize,                 // [in] buffer size                         [SIZE_T]
-        bytes_read: *mut usize              // [out, opt] returns read size.            [PSIZE_T]
+        bytes_read: PUsize                  // [out, opt] returns read size.            [PSIZE_T]
     ) -> NTSTATUS;
 
     fn nt_write_virtual_memory(    
@@ -214,7 +220,7 @@ extern "C" {
         base_address: CCvoid,               // [in, opt] Where to start writing         [PVOID] 
         buffer_ptr: CCvoid,                 // [in] pointer to buffer to write from     [PVOID] 
         buffer_size:  usize,                // [in] buffer size (write size)            [SIZE_T] 
-        bytes_written: *mut usize           // [out, opt] returns size of write         [PSIZE_T] 
+        bytes_written: PUsize               // [out, opt] returns size of write         [PSIZE_T] 
     ) -> NTSTATUS;
     
     fn zw_allocate_virtual_memory(
@@ -252,18 +258,23 @@ extern "C" {
         base_address: *mut PVoid,           // [in, out] Pointer to start address.      [*PVOID]
         region_size:  PUsize,               // [in, out] Size of alter region           [PSIZE_T]
         proc_flag: usize,                   // [in] New protection flags.               [ULONG]
-        flag_old: *mut usize                // [out] Returns old protection flags       [PULONG]
+        flag_old: PUsize                    // [out] Returns old protection flags       [PULONG]
     ) -> NTSTATUS;
 
     fn nt_adjust_privileges_token(
-        token_handle: HANDLE,               // [in]                                     [HANDLE]
-        disable_all: bool,                  // [in]                                     [BOOLEAN]
-        priveleges: *const TOKEN_PRIVILEGES,// [in, opt]                                [PTOKEN_PRIVILEGES]
-        buffer_len: usize,                  // [in]                                     [ULONG] 
-        previous_state: CCvoid,             // [out]                                    [PTOKEN_PRIVILEGES]
-        return_length: CCvoid,              // [out, opt]                               [PULONG]
+        token_handle: HANDLE,               // [in] A handle to the token.              [HANDLE]
+        disable_all: bool,                  // [in] Disable all privileges              [BOOLEAN]
+        privileges: *const TOKEN_PRIVILEGES,// [in, opt] pointer to the new privileges  [PTOKEN_PRIVILEGES]
+        buffer_len: usize,                  // [in] Size of the privileges              [ULONG] 
+        previous_state: CCvoid,             // [out] Returns old privileges             [PTOKEN_PRIVILEGES]
+        return_length: CCvoid,              // [out, opt] size of returned data         [PULONG]
     ) -> NTSTATUS;
-
+    
+    fn nt_open_process_token(
+        process_handle: HANDLE,             // [in] Handle to process             [HANDLE]
+        access_mask: TOKEN_ACCESS_MASK,     // [in] Access mask                   [ACCESS_MASK]
+        token_handle_ptr: *mut HANDLE,      // [out] the return handle            [PHANDLE]
+    ) -> NTSTATUS;
 }
 
 // --- Rusty wrapper functions ---
@@ -304,16 +315,19 @@ pub fn get_process_name(handle: &HANDLE) -> Result<PathBuf, windows::core::Error
     Ok(PathBuf::from(String::from_utf16_lossy(&return_buffer)))
 }
 
-pub fn get_token_handle(handle: HANDLE) -> Result<HANDLE, windows::core::Error> { 
+pub fn nt_get_token_handle(handle: HANDLE) -> Result<HANDLE, NTSTATUS> { 
     let mut token_handle = HANDLE::default();
     let mut token_handle_ptr = &mut token_handle as *mut HANDLE;
     unsafe {
-        OpenProcessToken(
+        let status = nt_open_process_token(
             handle,
             TOKEN_ALL_ACCESS,
             token_handle_ptr
-        )?;
-        Ok(token_handle)
+        );
+        match status.is_ok() { 
+            true  => return Ok(token_handle),
+            false => return Err(status)
+        }
     }
 }
 
@@ -330,30 +344,33 @@ fn get_luid() -> Result<LUID, windows::core::Error> {
     }
 }
 
-pub fn adjust_token_privileges(token_handle: HANDLE) -> Result<(), windows::core::Error> {
-    let luid = get_luid()?;
-    let token_privs: TOKEN_PRIVILEGES = TOKEN_PRIVILEGES{
+pub fn nt_adjust_token_privileges(token_handle: HANDLE) -> Result<(), NTSTATUS> { 
+    let luid = get_luid()
+        .expect("[!] Unable to generate a LUID");
+
+    let token_data: TOKEN_PRIVILEGES = TOKEN_PRIVILEGES{
         PrivilegeCount:1,
         Privileges: [LUID_AND_ATTRIBUTES {
             Luid: luid,
             Attributes: TOKEN_PRIVILEGES_ATTRIBUTES(0x00000002),
         }; 1]
     };
-    let ptr = &token_privs as *const _ as *const TOKEN_PRIVILEGES;
-    
-    unsafe { 
-        let status= AdjustTokenPrivileges(
+    let token_data_pointer: *const TOKEN_PRIVILEGES = &token_data as *const _ as *const TOKEN_PRIVILEGES;
+
+    unsafe {
+        let status = nt_adjust_privileges_token(
             token_handle,
             false,
-            Some(ptr),
-            std::mem::size_of::<TOKEN_PRIVILEGES>().try_into().unwrap(),
-            None,
-            None,
+            token_data_pointer,
+            std::mem::size_of::<TOKEN_PRIVILEGES>() as usize,
+            ptr::null_mut() as CCvoid,
+            ptr::null_mut() as CCvoid,
         );
-        dbg!(status);
-        Ok(())
+        match status.is_ok() { 
+            true  => return Ok(()),
+            false => return Err(status)
+        }
     }
-    
 }
 
 pub fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
