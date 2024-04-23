@@ -7,9 +7,9 @@ use windows::{  core::PWSTR,
                 Wdk::Foundation::OBJECT_ATTRIBUTES, 
                 Win32::{
                     Foundation::{CloseHandle, HANDLE, HWND, LUID, NTSTATUS}, 
-                    Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, TOKEN_ACCESS_MASK, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES}, 
+                    Security::{LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, TOKEN_ACCESS_MASK, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES}, 
                     System::{ ProcessStatus::EnumProcesses, 
-                        Threading::{OpenProcessToken, QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
+                        Threading::{GetCurrentProcessId, QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
                                     WindowsProgramming::CLIENT_ID}
                 }
 };
@@ -21,6 +21,13 @@ fn pop_suffix<T: AsRef<[u16]>>(input: T) -> Vec<u16> {
         buffer.pop();
     }
     buffer
+}
+
+macro_rules! exit {
+    ($exit_code:expr, $($arg:tt)*) => {{
+        eprintln!($($arg)*);
+        std::process::exit($exit_code);
+    }};
 }
 
 // --- Windows process struct ---
@@ -315,6 +322,25 @@ pub fn get_process_name(handle: &HANDLE) -> Result<PathBuf, windows::core::Error
     Ok(PathBuf::from(String::from_utf16_lossy(&return_buffer)))
 }
 
+fn get_luid() -> Result<LUID, windows::core::Error> {
+    let mut luid_content = LUID::default();
+    let mut luid_ptr = &mut luid_content as *mut LUID;
+    unsafe { 
+        LookupPrivilegeValueW(
+            None,
+            SE_DEBUG_NAME,
+            luid_ptr
+        )?;
+        Ok(luid_content)
+    }
+}
+
+pub fn get_current_process_id() -> usize {
+    unsafe {
+        GetCurrentProcessId() as usize
+    }
+}
+
 pub fn nt_get_token_handle(handle: HANDLE) -> Result<HANDLE, NTSTATUS> { 
     let mut token_handle = HANDLE::default();
     let mut token_handle_ptr = &mut token_handle as *mut HANDLE;
@@ -328,19 +354,6 @@ pub fn nt_get_token_handle(handle: HANDLE) -> Result<HANDLE, NTSTATUS> {
             true  => return Ok(token_handle),
             false => return Err(status)
         }
-    }
-}
-
-fn get_luid() -> Result<LUID, windows::core::Error> {
-    let mut luid_content = LUID::default();
-    let mut luid_ptr = &mut luid_content as *mut LUID;
-    unsafe { 
-        LookupPrivilegeValueW(
-            None,
-            SE_DEBUG_NAME,
-            luid_ptr
-        )?;
-        Ok(luid_content)
     }
 }
 
