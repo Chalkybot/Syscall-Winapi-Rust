@@ -22,7 +22,7 @@ At the time of writing, this can use known bad shellcode (a meterpreter shell), 
 ## Usage
 Very simple, generate shellcode and pack it to a vector of u8. After this, place it to the DATA type in build.rs, and build. The build.rs encrypts the shellcode with random keys and packs in different sections of the resulting binary.
 
-Using the binary is as simple as running it with the PID of your target process. You can inject to processes that aren't SecureObjects and are owned by your account with admin permissions, but setting SeDebugPrivilege to access SecureObjects does require admin privileges.
+Using the binary is as simple as running it with the PID of your target process. You can inject to processes that aren't SecureObjects and are owned by your account without admin permissions, but setting SeDebugPrivilege to access SecureObjects does require admin privileges.
 
 ## Why this works
 This is purely sceptical, but my assumption is that as Rust binaries haven't been around for as long as C/C++ binaries, especially in the malware scene. This results in normal techniques not being fingerprinted.
