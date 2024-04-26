@@ -1,5 +1,5 @@
 [package]
-name = "rust-syscall-shellcode-injector"
+name = "direct-syscalls-with-rust"
 version = "0.1.0"
 edition = "2021"
 
