@@ -3,6 +3,12 @@ This repo is a proof concept of utilizing direct syscalls with Rust to avoid ntd
 
 At the time of writing, this can use known bad shellcode (a meterpreter shell), and bypass the majority of big name antimalware solutions. Having a custom reverse shell would make this far better.
  
+## Demo
+
+[![Demo GIF](demo-preview.png)](https://streamable.com/nvloep)
+
+###### *Clicking on the image opens a link to the demo video.*
+
 ### The execution flow: 
 * The process starts up and begins reconstructing the payload from scraps of encrypted code stored in various sections of the binary.
 * After reconstruction, the payload will decrypted and is now ready to be injected.
